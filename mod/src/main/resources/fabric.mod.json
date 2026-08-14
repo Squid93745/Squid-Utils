@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "id": "squidutils",
+  "version": "${version}",
+  "name": "Squid Utils",
+  "description": "Utilities for Hypixel SkyBlock. Ranks shard fusions by coins per hour from live Bazaar prices and measured demand, with fishing and bestiary tools on the way.",
+  "authors": [
+    "thesh"
+  ],
+  "license": "MIT",
+  "icon": "assets/squidutils/icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "dev.squidutils.SquidUtils"
+    ],
+    "modmenu": [
+      "dev.squidutils.ModMenuIntegration"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.19.0",
+    "minecraft": "~26.1",
+    "java": ">=25",
+    "fabric-api": "*",
+    "fabric-language-kotlin": ">=1.13.0"
+  },
+  "recommends": {
+    "modmenu": "*"
+  }
+}
