@@ -18,6 +18,11 @@ import java.util.List;
  * quantity and cost, then every fusion needed, dependency-first, with
  * clickable shard names exactly like the overlay panels use.
  *
+ * <p>Laid out as one centred, bordered panel sized to its own content rather
+ * than sprawled across the full window - the earlier full-width version put
+ * a centred title over left-anchored rows, which read as broken alignment
+ * more than deliberate layout, especially on a wide monitor.
+ *
  * <p>The route is recomputed on every render rather than cached at open time,
  * the same way every other screen in the mod reads live state. That is cheap
  * here: {@link RouteSolver#explain} only walks the one small subtree this
@@ -26,7 +31,8 @@ import java.util.List;
 public class MultiStepScreen extends Screen {
 
     private static final int[] MULTIPLIERS = {1, 8, 16, 32, 64};
-    private static final int ICON = 9;
+    private static final int ICON = 10;
+    private static final int PAD = 20;
 
     private record Hit(int x, int y, int w, int h, String shard, int units) {
         boolean contains(double mx, double my) {
@@ -34,7 +40,7 @@ public class MultiStepScreen extends Screen {
         }
     }
 
-    private record MultButton(int x, int y, int w, int h, int value) {
+    private record Button(int x, int y, int w, int h, Runnable action) {
         boolean contains(double mx, double my) {
             return mx >= x && mx <= x + w && my >= y && my <= y + h;
         }
@@ -43,10 +49,12 @@ public class MultiStepScreen extends Screen {
     private final Screen previous;
     private final int rootRecipe;
     private final List<Hit> hits = new ArrayList<>();
-    private final List<MultButton> multButtons = new ArrayList<>();
+    private final List<Button> buttons = new ArrayList<>();
     private int multiplier = 1;
     private int scroll = 0;
     private int contentHeight = 0;
+    private String flash;
+    private long flashUntil;
 
     public MultiStepScreen(Screen previous, int rootRecipe) {
         super(Component.literal("Fusion route"));
@@ -61,9 +69,9 @@ public class MultiStepScreen extends Screen {
 
     @Override
     public void extractRenderState(GuiGraphicsExtractor g, int mouseX, int mouseY, float partial) {
-        g.fill(0, 0, width, height, 0xE0101018);
+        g.fill(0, 0, width, height, 0x90000000);
         hits.clear();
-        multButtons.clear();
+        buttons.clear();
 
         var engine = SquidUtils.engine();
         var costs = engine == null ? null : engine.routeCosts();
@@ -80,65 +88,73 @@ public class MultiStepScreen extends Screen {
         double total = RouteSolver.routeCost(data, costs, route);
         int lineH = font.lineHeight + 3;
 
-        int y = 20 - scroll;
-        drawCentered(g, qty + "x " + result.name() + "  (" + Draw.coins(total) + ")", y, Draw.TITLE);
+        String titleText = qty + "x " + result.name() + "  (" + Draw.coins(total) + ")";
+        String multRowText = "Buy for:  1x  8x  16x  32x  64x  ";
+        String helpText = "Click a name for the bazaar, again to fill an order sign  ·  Esc to close";
+
+        // Measure first, so the panel fits its own content instead of a
+        // guessed fixed width - the reference this is modelled on sizes
+        // itself the same way.
+        int contentW = Math.max(font.width(titleText), font.width(multRowText));
+        contentW = Math.max(contentW, font.width(helpText));
+        for (var buy : route.buys()) {
+            contentW = Math.max(contentW, ICON + 6 + font.width(buyLineText(data, costs, buy)));
+        }
+        for (var step : route.steps()) {
+            contentW = Math.max(contentW, font.width(fuseLineText(data, step)));
+        }
+        int panelW = Math.min(contentW + PAD * 2, width - 40);
+        int panelX = (width - panelW) / 2;
+        int contentX = panelX + PAD;
+
+        int lineCount = 4 + route.buys().size() + route.steps().size();
+        int panelH = Math.min(lineCount * lineH + 70, height - 40);
+        int panelY = 20;
+        // Draw.panel always draws at the origin, relying on a translated pose
+        // matrix the HUD panels set up beforehand - this screen draws in raw
+        // screen coordinates instead, so the fill/outline pair is inlined here.
+        g.fill(panelX, panelY, panelX + panelW, panelY + panelH, Draw.BG);
+        g.outline(panelX, panelY, panelW, panelH, Draw.TITLE);
+
+        int y = panelY + PAD - scroll;
+        drawCentered(g, titleText, panelX, panelW, y, Draw.TITLE);
         y += lineH + 8;
 
         // Quantity presets scale every number below at once, the same idea as
-        // holding a number key to pick a stack size - useful when you are
-        // stocking up rather than doing the fusion exactly once.
-        y = drawMultiplierRow(g, y);
-        y += 8;
-
-        for (var buy : route.buys()) {
-            var s = data.shard(buy.shardIndex());
-            double cost = costs.cost()[buy.shardIndex()] * buy.units();
-            y = buyRow(g, y, s, buy.units(), cost, lineH);
-        }
+        // holding a number key to pick a stack size - useful when stocking up
+        // rather than doing the fusion exactly once.
+        y = drawMultiplierRow(g, contentX, y);
+        y += 6;
+        y = drawActionRow(g, contentX, y, route);
         y += 10;
 
-        g.text(font, "Fuse, in order", 20, y, Draw.TITLE);
+        for (var buy : route.buys()) {
+            y = buyRow(g, contentX, y, data, costs, buy, lineH);
+        }
+        y += 8;
+
+        g.text(font, "Fuse, in order", contentX, y, Draw.TITLE);
         y += lineH;
         for (var step : route.steps()) {
-            int r = step.recipeIndex();
-            var sa = data.shard(data.inputA(r));
-            var sb = data.shard(data.inputB(r));
-            var sr = data.shard(data.result(r));
-            boolean same = data.inputA(r) == data.inputB(r);
-
-            int x = 20;
-            if (step.crafts() > 1) {
-                String prefix = step.crafts() + "×  ";
-                g.text(font, prefix, x, y, Draw.DIM);
-                x += font.width(prefix);
-            }
-            if (same) {
-                x = plain(g, x, y, (sa.fuseAmount() + sb.fuseAmount()) + "x ");
-                x = name(g, x, y, sa);
-            } else {
-                x = plain(g, x, y, sa.fuseAmount() + "x ");
-                x = name(g, x, y, sa);
-                x = plain(g, x, y, " + " + sb.fuseAmount() + "x ");
-                x = name(g, x, y, sb);
-            }
-            x = plain(g, x, y, " → " + data.qty(r) + "x ");
-            name(g, x, y, sr);
-            y += lineH;
+            y = fuseRow(g, contentX, y, data, step, lineH);
         }
 
-        contentHeight = y + scroll - 20;
+        contentHeight = y + scroll - (panelY + PAD);
 
         if (route.truncated()) {
-            String warn = "(route runs deep - showing as much as fits safely)";
-            drawCentered(g, warn, height - font.lineHeight * 2 - 8, Draw.DIM);
+            y += 6;
+            g.text(font, "(route runs deep - showing as much as fits safely)", contentX, y, Draw.DIM);
         }
-        String help = "Click a name to view it on the bazaar, or again to fill a bazaar order sign  ·  Esc to close";
-        g.text(font, help, (width - font.width(help)) / 2, height - font.lineHeight - 6, Draw.DIM);
+
+        drawCentered(g, helpText, panelX, panelW, panelY + panelH - font.lineHeight - 8, Draw.DIM);
+
+        if (flash != null && System.currentTimeMillis() < flashUntil) {
+            drawCentered(g, flash, panelX, panelW, panelY + panelH + 6, Draw.C_PROFIT);
+        }
     }
 
-    private int drawMultiplierRow(GuiGraphicsExtractor g, int y) {
+    private int drawMultiplierRow(GuiGraphicsExtractor g, int x, int y) {
         String label = "Buy for: ";
-        int x = 20;
         g.text(font, label, x, y, Draw.DIM);
         x += font.width(label) + 4;
 
@@ -148,26 +164,101 @@ public class MultiStepScreen extends Screen {
             boolean active = m == multiplier;
             g.fill(x, y - 1, x + w, y + font.lineHeight + 1, active ? 0x80B86BFF : 0x30FFFFFF);
             g.text(font, text, x + 3, y, active ? 0xFFFFFFFF : Draw.DIM);
-            multButtons.add(new MultButton(x, y - 1, w, font.lineHeight + 2, m));
+            buttons.add(new Button(x, y - 1, w, font.lineHeight + 2, () -> multiplier = m));
             x += w + 4;
         }
         return y + font.lineHeight + 2;
     }
 
-    private void drawCentered(GuiGraphicsExtractor g, String text, int y, int colour) {
-        g.text(font, text, (width - font.width(text)) / 2, y, colour);
+    private int drawActionRow(GuiGraphicsExtractor g, int x, int y, RouteSolver.Route route) {
+        x = actionButton(g, x, y, "+ Add to shopping list", Draw.C_PROFIT, () -> {
+            ShoppingList.addRoute(route);
+            flash("Added to shopping list");
+        });
+        x += 10;
+        int count = ShoppingList.size();
+        String label = count > 0 ? "View shopping list (" + count + ")" : "View shopping list";
+        actionButton(g, x, y, label, Draw.C_VOLUME, () ->
+                minecraft.setScreen(new ShoppingListScreen(this)));
+        return y + font.lineHeight + 2;
+    }
+
+    private int actionButton(GuiGraphicsExtractor g, int x, int y, String text, int colour, Runnable action) {
+        int w = font.width(text) + 10;
+        int h = font.lineHeight + 4;
+        g.fill(x, y - 1, x + w, y - 1 + h, 0x30FFFFFF);
+        g.outline(x, y - 1, w, h, colour);
+        g.text(font, text, x + 5, y, colour);
+        buttons.add(new Button(x, y - 1, w, h, action));
+        return x + w;
+    }
+
+    private void flash(String message) {
+        flash = message;
+        flashUntil = System.currentTimeMillis() + 2000;
+    }
+
+    private void drawCentered(GuiGraphicsExtractor g, String text, int panelX, int panelW, int y, int colour) {
+        g.text(font, text, panelX + (panelW - font.width(text)) / 2, y, colour);
+    }
+
+    private String buyLineText(FusionData data, RouteSolver.Costs costs, RouteSolver.Buy buy) {
+        var s = data.shard(buy.shardIndex());
+        double cost = costs.cost()[buy.shardIndex()] * buy.units();
+        return s.name() + " x" + buy.units() + "  (" + Draw.coins(cost) + ")";
     }
 
     /** A shopping-list line: icon, name, quantity and cost - the whole row is
      *  one click target, both to open the bazaar and to arm the sign fill. */
-    private int buyRow(GuiGraphicsExtractor g, int y, FusionData.Shard s, int units, double cost, int lineH) {
-        int x = 20;
+    private int buyRow(GuiGraphicsExtractor g, int x, int y, FusionData data, RouteSolver.Costs costs,
+                       RouteSolver.Buy buy, int lineH) {
+        var s = data.shard(buy.shardIndex());
+        double cost = costs.cost()[buy.shardIndex()] * buy.units();
         drawIcon(g, x, y - 1, ICON, s);
-        x += ICON + 4;
 
-        String line = s.name() + " x" + units + "  (" + Draw.coins(cost) + ")";
-        g.text(font, line, x, y, 0xFF7FD4FF);
-        hits.add(new Hit(20, y - 1, ICON + 4 + font.width(line), font.lineHeight + 2, s.name(), units));
+        String line = buyLineText(data, costs, buy);
+        g.text(font, line, x + ICON + 6, y, 0xFF7FD4FF);
+        hits.add(new Hit(x, y - 1, ICON + 6 + font.width(line), font.lineHeight + 2, s.name(), buy.units()));
+        return y + lineH;
+    }
+
+    private String fuseLineText(FusionData data, RouteSolver.Step step) {
+        int r = step.recipeIndex();
+        var sa = data.shard(data.inputA(r));
+        var sb = data.shard(data.inputB(r));
+        var sr = data.shard(data.result(r));
+        boolean same = data.inputA(r) == data.inputB(r);
+        String prefix = step.crafts() > 1 ? step.crafts() + "×  " : "";
+        String line = same
+                ? (sa.fuseAmount() + sb.fuseAmount()) + "x " + sa.name()
+                : sa.fuseAmount() + "x " + sa.name() + " + " + sb.fuseAmount() + "x " + sb.name();
+        return prefix + line + " → " + data.qty(r) + "x " + sr.name();
+    }
+
+    private int fuseRow(GuiGraphicsExtractor g, int x0, int y, FusionData data, RouteSolver.Step step, int lineH) {
+        int r = step.recipeIndex();
+        var sa = data.shard(data.inputA(r));
+        var sb = data.shard(data.inputB(r));
+        var sr = data.shard(data.result(r));
+        boolean same = data.inputA(r) == data.inputB(r);
+
+        int x = x0;
+        if (step.crafts() > 1) {
+            String prefix = step.crafts() + "×  ";
+            g.text(font, prefix, x, y, Draw.DIM);
+            x += font.width(prefix);
+        }
+        if (same) {
+            x = plain(g, x, y, (sa.fuseAmount() + sb.fuseAmount()) + "x ");
+            x = name(g, x, y, sa);
+        } else {
+            x = plain(g, x, y, sa.fuseAmount() + "x ");
+            x = name(g, x, y, sa);
+            x = plain(g, x, y, " + " + sb.fuseAmount() + "x ");
+            x = name(g, x, y, sb);
+        }
+        x = plain(g, x, y, " → " + data.qty(r) + "x ");
+        name(g, x, y, sr);
         return y + lineH;
     }
 
@@ -203,9 +294,9 @@ public class MultiStepScreen extends Screen {
 
     @Override
     public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
-        for (MultButton b : multButtons) {
+        for (Button b : buttons) {
             if (b.contains(event.x(), event.y())) {
-                multiplier = b.value();
+                b.action().run();
                 return true;
             }
         }
@@ -221,7 +312,7 @@ public class MultiStepScreen extends Screen {
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
-        int maxScroll = Math.max(0, contentHeight - (height - 40));
+        int maxScroll = Math.max(0, contentHeight - (height - 80));
         scroll = Math.max(0, Math.min(maxScroll, scroll - (int) (scrollY * 16)));
         return true;
     }

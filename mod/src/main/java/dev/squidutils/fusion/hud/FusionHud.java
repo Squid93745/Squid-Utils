@@ -11,6 +11,7 @@ import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.screens.ChatScreen;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+import net.minecraft.network.chat.Component;
 
 import java.util.EnumMap;
 import java.util.Map;
@@ -22,22 +23,24 @@ import java.util.function.Supplier;
  * <p>No scoring, no network and no allocation-heavy work happens here - this
  * runs every frame.
  *
- * <p>Two entry points, for two different jobs. Normally the HUD calls {@link
- * #extractRenderState} and that draws the panels directly. When a screen is
- * open, panels instead draw from a screen background hook ({@link
- * #drawUnderScreen}), which puts them beneath the menu rather than on top of
- * it - important at the Fusion Box, where you want to read the panel and use
- * the menu at the same time. {@link #visibilityOf} decides, per screen,
- * whether that even happens at all.
+ * <p>Two entry points. Normally the HUD calls {@link #extractRenderState} and
+ * that draws the panels directly. When a screen is open, {@link
+ * #extractRenderState} is never called at all - confirmed by instrumenting it
+ * and watching the log stay silent the whole time a screen sat open, which
+ * disproved this project's own earlier assumption that the HUD layer renders
+ * above the current screen. Panels instead draw from a screen background hook
+ * ({@link #drawUnderScreen}), which puts them beneath the menu rather than on
+ * top of it - important at the Fusion Box, where you want to read the panel
+ * and use the menu at the same time. {@link #visibilityOf} decides, per
+ * screen, whether that even happens at all.
  *
- * <p>The hover tooltip is the one exception: it belongs on top of everything,
- * menu included. Drawing it from the same background hook as the panels put
- * it under a container's own foreground (item slots, its own tooltips), which
- * made it look broken. The HUD layer renders above the current screen, so
- * {@link #extractRenderState} draws the tooltip itself whenever a screen is
- * open, using the cursor position {@link #drawUnderScreen} last saw - the HUD
- * callback gets no mouse position of its own, since normal gameplay has no
- * cursor to report.
+ * <p>The hover tooltip used to be hand-drawn immediately inline, which is why
+ * it kept losing to a container's own foreground no matter which extraction
+ * hook it moved to - immediate drawing has no way to guarantee it is the last
+ * thing painted. {@link GuiGraphicsExtractor#setTooltipForNextFrame} is the
+ * proper fix: the same deferred queue vanilla's own item-slot tooltips use,
+ * rendered in a dedicated always-last pass regardless of when during
+ * extraction it gets queued.
  */
 public final class FusionHud implements HudElement {
 
@@ -77,9 +80,6 @@ public final class FusionHud implements HudElement {
     private final Map<FusionWidgets.Which, int[]> bounds =
             new EnumMap<>(FusionWidgets.Which.class);
 
-    private volatile int screenMouseX;
-    private volatile int screenMouseY;
-
     public FusionHud(FusionEngine engine, Supplier<SquidUtilsConfig> config) {
         this.engine = engine;
         this.config = config;
@@ -88,11 +88,7 @@ public final class FusionHud implements HudElement {
     @Override
     public void extractRenderState(GuiGraphicsExtractor g, DeltaTracker delta) {
         Minecraft mc = Minecraft.getInstance();
-        if (mc == null) return;
-        if (mc.screen != null) {
-            drawTooltip(g, mc, screenMouseX, screenMouseY);
-            return;
-        }
+        if (mc == null || mc.screen != null) return;   // handled by drawUnderScreen
         drawAll(g, mc, false);
     }
 
@@ -106,8 +102,6 @@ public final class FusionHud implements HudElement {
     public void drawUnderScreen(GuiGraphicsExtractor g, int mouseX, int mouseY) {
         Minecraft mc = Minecraft.getInstance();
         if (mc == null) return;
-        screenMouseX = mouseX;
-        screenMouseY = mouseY;
 
         ScreenVisibility vis = visibilityOf(mc.screen);
         if (vis == ScreenVisibility.HIDDEN) {
@@ -121,28 +115,15 @@ public final class FusionHud implements HudElement {
             return;
         }
         drawAll(g, mc, vis == ScreenVisibility.DIMMED);
-    }
 
-    private void drawTooltip(GuiGraphicsExtractor g, Minecraft mc, int mouseX, int mouseY) {
-        SquidUtilsConfig cfg = config.get();
-        if (cfg == null || cfg.general.hideInMenus || !cfg.general.showHud) return;
-        if (visibilityOf(mc.screen) != ScreenVisibility.FULL) return;
-
-        String shard = FusionWidgets.shardAt(mouseX, mouseY);
-        if (shard != null) {
-            tooltip(g, mc, mouseX, mouseY, "Click to view " + shard + " on the bazaar");
+        if (vis == ScreenVisibility.FULL && cfg.general.showHud) {
+            String shard = FusionWidgets.shardAt(mouseX, mouseY);
+            if (shard != null) {
+                g.setTooltipForNextFrame(
+                        Component.literal("Click to view " + shard + " on the bazaar"),
+                        mouseX, mouseY);
+            }
         }
-    }
-
-    private static void tooltip(GuiGraphicsExtractor g, Minecraft mc,
-                                int x, int y, String text) {
-        int w = mc.font.width(text) + 8;
-        int h = mc.font.lineHeight + 6;
-        int tx = Math.min(x + 10, mc.getWindow().getGuiScaledWidth() - w - 2);
-        int ty = Math.max(2, y - h - 2);
-        g.fill(tx, ty, tx + w, ty + h, 0xF0100010);
-        g.outline(tx, ty, w, h, 0xFFB86BFF);
-        g.text(mc.font, text, tx + 4, ty + 3, 0xFFFFFFFF);
     }
 
     private void drawAll(GuiGraphicsExtractor g, Minecraft mc, boolean dimmed) {
