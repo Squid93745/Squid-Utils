@@ -24,6 +24,13 @@ public class FusionGeneralCategory {
     public boolean showLegend = true;
 
     @Expose
+    @ConfigOption(name = "Compact rows",
+            desc = "Drop to one line per entry. Useful at small GUI scales.")
+    @ConfigEditorBoolean
+    @SearchTag("compact dense small lines")
+    public boolean compact = false;
+
+    @Expose
     @ConfigOption(name = "Read wisdom automatically",
             desc = "Pick up Hunting Wisdom from the SkyBlock stats menu whenever "
                     + "you open it. Turn off to set it by hand below.")

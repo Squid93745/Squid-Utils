@@ -591,7 +591,7 @@ public final class FusionWidgets {
         List<Cell> legend = new ArrayList<>(columns.size());
         for (Column c : columns) legend.add(new Cell(c.legend(), c.colour()));
 
-        boolean compact = cfg.general.compact;
+        boolean compact = cfg.fusion.general.compact;
         boolean showLegend = cfg.fusion.general.showLegend && !legend.isEmpty();
         int lineH = font.lineHeight + 1;
         int[] colX = columnOffsets(font, rows, legend);

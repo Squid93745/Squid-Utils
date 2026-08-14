@@ -30,13 +30,6 @@ public class GeneralCategory {
     public boolean openEditor = false;
 
     @Expose
-    @ConfigOption(name = "Compact rows",
-            desc = "Drop to one line per entry. Useful at small GUI scales.")
-    @ConfigEditorBoolean
-    @SearchTag("compact dense small lines")
-    public boolean compact = false;
-
-    @Expose
     @ConfigOption(name = "Hide in menus",
             desc = "Hide overlays entirely whenever a screen is open. Leave this "
                     + "off to keep them visible at the Fusion Box; they are drawn "

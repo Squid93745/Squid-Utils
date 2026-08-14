@@ -134,13 +134,6 @@ public class SquidUtils implements ClientModInitializer {
                             .afterBackground(screen)
                             .register((s, gfx, mx, my, tick) -> hud.drawUnderScreen(gfx, mx, my));
 
-                    // A later hook than the one above, so the hover tooltip
-                    // draws on top of the screen's own foreground (item slots
-                    // etc) instead of being painted over by it.
-                    net.fabricmc.fabric.api.client.screen.v1.ScreenEvents
-                            .afterExtract(screen)
-                            .register((s, gfx, mx, my, tick) -> hud.drawTooltip(gfx, mx, my));
-
                     // Clicking a legend header sorts by it, a multi-step row
                     // opens its route, and a shard name opens its bazaar page -
                     // checked in that order since only the last needs nothing
@@ -153,13 +146,13 @@ public class SquidUtils implements ClientModInitializer {
                                 var cfg = config();
                                 if (cfg == null || cfg.general.hideInMenus
                                         || !cfg.general.showHud) return true;
-                                // Never steal a click meant for Minecraft's own
-                                // menus: the pause screen, "Options...", and
-                                // everything reachable from it (video, sound,
-                                // accessibility, ...) all share this ancestry.
-                                if (s instanceof net.minecraft.client.gui.screens.PauseScreen
-                                        || s instanceof net.minecraft.client.gui.screens.options.OptionsScreen
-                                        || s instanceof net.minecraft.client.gui.screens.options.OptionsSubScreen) {
+                                // Only a container screen gets full interaction -
+                                // the Fusion Box, the bazaar, an NPC shop, your
+                                // own inventory. Everything else (pause, Options,
+                                // chat, the title screen, ...) passes the click
+                                // through untouched.
+                                if (dev.squidutils.fusion.hud.FusionHud.visibilityOf(s)
+                                        != dev.squidutils.fusion.hud.FusionHud.ScreenVisibility.FULL) {
                                     return true;
                                 }
                                 if (dev.squidutils.fusion.hud.FusionWidgets

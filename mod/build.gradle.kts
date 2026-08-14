@@ -79,3 +79,20 @@ tasks.processResources {
         expand("version" to version)
     }
 }
+
+// Copies the freshly built jar straight into the live PrismLauncher instance,
+// so a normal build is also a test-ready install with no separate manual
+// copy step. onlyIf rather than a hard dependency on the path existing: this
+// should never break a build just because that instance moved or does not
+// exist on whatever machine is building.
+val prismMods = "${System.getenv("APPDATA")}\\PrismLauncher\\instances\\Skyblock 1.26.1.2\\minecraft\\mods"
+
+tasks.register<Copy>("installMod") {
+    from(tasks.jar.flatMap { it.archiveFile })
+    into(prismMods)
+    onlyIf { file(prismMods).isDirectory }
+}
+
+tasks.jar {
+    finalizedBy("installMod")
+}
