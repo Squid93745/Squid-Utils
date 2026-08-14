@@ -67,6 +67,21 @@ public final class FusionHud implements HudElement {
         SquidUtilsConfig cfg = config.get();
         if (cfg == null || cfg.general.hideInMenus) return;
         drawAll(g, mc);
+    }
+
+    /**
+     * Called from a later hook than {@link #drawUnderScreen}, after the
+     * screen has drawn its own foreground - item slots, text, borders. The
+     * panels themselves are meant to sit under all of that, but a hover
+     * tooltip is not: drawn from the same early point as the panels, a
+     * screen's own foreground content painted over it whenever the cursor was
+     * over a slot, which made it look like the tooltip did not work at all.
+     */
+    public void drawTooltip(GuiGraphicsExtractor g, int mouseX, int mouseY) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc == null) return;
+        SquidUtilsConfig cfg = config.get();
+        if (cfg == null || cfg.general.hideInMenus || !cfg.general.showHud) return;
 
         String shard = FusionWidgets.shardAt(mouseX, mouseY);
         if (shard != null) {

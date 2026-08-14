@@ -123,9 +123,10 @@ public final class FusionWidgets {
     }
 
     /**
-     * A sortable legend cell clicked: makes that column the active sort,
-     * flipping direction on a repeat click of the same one - same as clicking
-     * a column header twice in Task Manager.
+     * A sortable legend cell clicked: three states cycling on repeat clicks of
+     * the same column, same as Task Manager - descending, then ascending, then
+     * a third click clears back to the table's own ranking (recommendation
+     * score, margin x volume, or XP per fuse, depending which table).
      *
      * @return true if a header was hit, so the caller can swallow the click.
      */
@@ -133,11 +134,14 @@ public final class FusionWidgets {
         for (int i = HEADER_HITS.size() - 1; i >= 0; i--) {
             HeaderHit h = HEADER_HITS.get(i);
             if (!h.contains(mx, my)) continue;
-            if (sortColumn[h.table()] == h.key()) {
-                sortDescending[h.table()] = !sortDescending[h.table()];
+            int t = h.table();
+            if (sortColumn[t] != h.key()) {
+                sortColumn[t] = h.key();
+                sortDescending[t] = true;
+            } else if (sortDescending[t]) {
+                sortDescending[t] = false;
             } else {
-                sortColumn[h.table()] = h.key();
-                sortDescending[h.table()] = true;
+                sortColumn[t] = null;
             }
             return true;
         }
@@ -282,7 +286,7 @@ public final class FusionWidgets {
     private record Cell(String text, int colour) {}
 
     /** Which column, keyed for sorting - not display order, which is table-specific. */
-    private enum ColKey { COST, PROFIT, ROI, FILL_SEC, VOLUME, FIT, XP, XP_PER_K, STABILITY, FILL_MIN, BOTTLENECK }
+    private enum ColKey { COST, PROFIT, ROI, FILL_SEC, VOLUME, FIT, XP, XP_PER_K, STABILITY, FILL, BOTTLENECK }
 
     private record Column(ColKey key, String legend, int colour) {}
 
@@ -322,7 +326,7 @@ public final class FusionWidgets {
         if (cfg.fusion.tables.showStability) cols.add(new Column(ColKey.STABILITY, "stable", Draw.C_STABLE));
         boolean ownFill = t == 0;   // the recommended table already has fill, in seconds
         if (cfg.fusion.tables.showFillTimes && !ownFill) {
-            cols.add(new Column(ColKey.FILL_MIN, "fill", Draw.C_FILL));
+            cols.add(new Column(ColKey.FILL, "fill", Draw.C_FILL));
         }
         if (cfg.fusion.tables.showBottleneck) cols.add(new Column(ColKey.BOTTLENECK, "bottleneck", Draw.DIM));
         return cols;
@@ -345,7 +349,7 @@ public final class FusionWidgets {
             case XP -> o.xpPerFuse();
             case XP_PER_K -> d.xpPerK();
             case STABILITY -> d.stability();
-            case FILL_MIN -> o.fillMinutes();
+            case FILL -> Recommender.fillSeconds(o);
             case BOTTLENECK -> 0;
         };
     }
@@ -368,8 +372,11 @@ public final class FusionWidgets {
                 double s = d.stability();
                 yield s < 0 ? "—" : Math.round(s * 100) + "%";
             }
-            case FILL_MIN -> o.fillMinutes() > 0.05 ? "~" + Math.round(o.fillMinutes()) + "m" : "-";
-            case BOTTLENECK -> o.limiter();
+            case FILL -> {
+                double secs = Recommender.fillSeconds(o);
+                yield secs < 1 ? "instant" : Math.round(secs) + "s";
+            }
+            case BOTTLENECK -> o.limiter() + "  (" + Draw.units(o.limiterVolume()) + "/h)";
         };
     }
 

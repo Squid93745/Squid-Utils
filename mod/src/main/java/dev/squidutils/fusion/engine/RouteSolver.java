@@ -95,18 +95,27 @@ public final class RouteSolver {
      * cheapest-route chain rarely converges back on a shared intermediate.
      */
     public static Route explain(FusionData data, Costs costs, int rootRecipe) {
+        return explain(data, costs, rootRecipe, 1);
+    }
+
+    /** As {@link #explain(FusionData, Costs, int)}, but for {@code multiplier}
+     *  crafts of the root recipe instead of one - every quantity in the route
+     *  scales with it. Used by the route screen's quantity presets; table rows
+     *  always want one, which is what the numbers there mean. */
+    public static Route explain(FusionData data, Costs costs, int rootRecipe, int multiplier) {
+        int m = Math.max(1, multiplier);
         Map<Integer, Integer> recipeCrafts = new LinkedHashMap<>();
         Map<Integer, Integer> shardBuys = new LinkedHashMap<>();
         boolean[] truncated = {false};
 
         int ai = data.inputA(rootRecipe), bi = data.inputB(rootRecipe);
         if (ai == bi) {
-            demand(data, costs, ai, data.shard(ai).fuseAmount() + data.shard(bi).fuseAmount(),
+            demand(data, costs, ai, m * (data.shard(ai).fuseAmount() + data.shard(bi).fuseAmount()),
                     0, new HashSet<>(), recipeCrafts, shardBuys, truncated);
         } else {
-            demand(data, costs, ai, data.shard(ai).fuseAmount(),
+            demand(data, costs, ai, m * data.shard(ai).fuseAmount(),
                     0, new HashSet<>(), recipeCrafts, shardBuys, truncated);
-            demand(data, costs, bi, data.shard(bi).fuseAmount(),
+            demand(data, costs, bi, m * data.shard(bi).fuseAmount(),
                     0, new HashSet<>(), recipeCrafts, shardBuys, truncated);
         }
 
@@ -116,7 +125,7 @@ public final class RouteSolver {
         Set<Integer> emitted = new HashSet<>();
         order(data, costs, ai, 0, new HashSet<>(), recipeCrafts, emitted, steps);
         if (ai != bi) order(data, costs, bi, 0, new HashSet<>(), recipeCrafts, emitted, steps);
-        steps.add(new Step(rootRecipe, 1));
+        steps.add(new Step(rootRecipe, m));
 
         List<Buy> buys = new ArrayList<>();
         for (var e : shardBuys.entrySet()) buys.add(new Buy(e.getKey(), e.getValue()));

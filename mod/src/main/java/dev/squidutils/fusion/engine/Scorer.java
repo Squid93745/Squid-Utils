@@ -68,7 +68,7 @@ public final class Scorer {
             String rarity,
             double cost, double profit, double roi,
             double fusesPerHour, double coinsPerHour, double score,
-            String limiter, double fillMinutes,
+            String limiter, double limiterVolume, double fillMinutes,
             double capture, boolean measured,
             double xpPerFuse, double xpPerHour, double salesPerHour) {
 
@@ -205,6 +205,11 @@ public final class Scorer {
 
             String limiter = bottleneck == rateA ? sa.name()
                     : bottleneck == rateB ? sb.name() : sr.name();
+            // The limiting shard's own raw flow, in units/hour - rateA/rateB/rateR
+            // already divide that down into fusions/hour, which is not what the
+            // "estimated volume" of the bottleneck shard means on its own.
+            double limiterVolume = bottleneck == rateA ? srcA
+                    : bottleneck == rateB ? srcB : absorb;
 
             // Share of that flow you can actually take. Measured from queue
             // competition when resting an order; the configured assumption only
@@ -231,7 +236,7 @@ public final class Scorer {
                     sr.tag(), sr.name(), sr.rarity(),
                     cost, profit, profit / cost,
                     fusesPerHour, coinsPerHour, rank,
-                    limiter, fillIn + fs.minutes, capture, measured,
+                    limiter, limiterVolume, fillIn + fs.minutes, capture, measured,
                     xpPerFuse, xpPerHour, salesPerHour));
         }
 

@@ -67,15 +67,27 @@ public class FusionCategory {
     // Per-table accessors, so rendering stays index-driven.
 
     public boolean tableShown(int t) {
-        return switch (t) { case 1 -> tables.coinsShow; case 2 -> tables.xpShow; default -> tables.recShow; };
+        return switch (t) {
+            case 1 -> tables.profitShards.show;
+            case 2 -> tables.xpTable.show;
+            default -> tables.recommended.show;
+        };
     }
 
     public int rows(int t) {
-        return switch (t) { case 1 -> tables.coinsRows; case 2 -> tables.xpRows; default -> tables.recRows; };
+        return switch (t) {
+            case 1 -> tables.profitShards.rows;
+            case 2 -> tables.xpTable.rows;
+            default -> tables.recommended.rows;
+        };
     }
 
     public boolean multiStep(int t) {
-        return switch (t) { case 1 -> tables.coinsMultiStep; case 2 -> tables.xpMultiStep; default -> tables.recMultiStep; };
+        return switch (t) {
+            case 1 -> tables.profitShards.multiStep;
+            case 2 -> tables.xpTable.multiStep;
+            default -> tables.recommended.multiStep;
+        };
     }
 
     /** One window for every graph now; kept per-table for the call sites. */
