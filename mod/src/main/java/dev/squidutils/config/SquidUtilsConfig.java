@@ -52,8 +52,6 @@ public class SquidUtilsConfig extends Config {
         switch (runnableId) {
             case GeneralCategory.OPEN_EDITOR -> net.minecraft.client.Minecraft.getInstance()
                     .setScreen(new dev.squidutils.hud.HudEditorScreen());
-            case FusionCategory.RUN_PAUSE -> dev.squidutils.SquidUtils.tracker().togglePause();
-            case FusionCategory.RUN_RESET -> dev.squidutils.SquidUtils.tracker().reset();
             default -> super.executeRunnable(runnableId);
         }
     }
@@ -61,8 +59,6 @@ public class SquidUtilsConfig extends Config {
     @Override
     public boolean isValidRunnable(int runnableId) {
         return runnableId == GeneralCategory.OPEN_EDITOR
-                || runnableId == FusionCategory.RUN_PAUSE
-                || runnableId == FusionCategory.RUN_RESET
                 || super.isValidRunnable(runnableId);
     }
 

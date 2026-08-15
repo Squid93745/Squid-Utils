@@ -92,11 +92,12 @@ public final class FusionWidgets {
         }
     }
 
-    /** A row's manual-delete button, in screen-space pixels - the shopping
-     *  list and fuse order panels' own "-", since right-click-to-remove on
-     *  the shopping list has no visible affordance and the fuse order panel
-     *  never had a remove gesture at all. */
-    private record DeleteHit(int x, int y, int w, int h, Runnable action) {
+    /** A clickable region backed by a plain callback, in screen-space pixels -
+     *  the shopping list and fuse order rows' manual-delete "-" (right-click-
+     *  to-remove on the shopping list had no visible affordance, and the fuse
+     *  order panel had no removal gesture at all), and the tracker panel's
+     *  hover-revealed pause/reset/view-mode controls. */
+    private record ActionHit(int x, int y, int w, int h, Runnable action) {
         boolean contains(double mx, double my) {
             return mx >= x && mx <= x + w && my >= y && my <= y + h;
         }
@@ -105,7 +106,7 @@ public final class FusionWidgets {
     private static final List<Hit> HITS = new ArrayList<>();
     private static final List<RowHit> ROW_HITS = new ArrayList<>();
     private static final List<HeaderHit> HEADER_HITS = new ArrayList<>();
-    private static final List<DeleteHit> DELETE_HITS = new ArrayList<>();
+    private static final List<ActionHit> ACTION_HITS = new ArrayList<>();
 
     /**
      * Which column each table is sorted by, and which direction - session-only
@@ -121,17 +122,17 @@ public final class FusionWidgets {
         HITS.clear();
         ROW_HITS.clear();
         HEADER_HITS.clear();
-        DELETE_HITS.clear();
+        ACTION_HITS.clear();
     }
 
     public static List<Hit> hits() { return HITS; }
 
-    /** Runs and consumes the delete button under the cursor, if any - checked
-     *  first in the click handler, since a delete button can sit on top of a
-     *  row that would otherwise open the bazaar. */
-    public static boolean handleDeleteClick(double mx, double my) {
-        for (int i = DELETE_HITS.size() - 1; i >= 0; i--) {
-            DeleteHit h = DELETE_HITS.get(i);
+    /** Runs and consumes the action-region under the cursor, if any - checked
+     *  first in the click handler, since e.g. a delete button can sit on top
+     *  of a row that would otherwise open the bazaar. */
+    public static boolean handleActionClick(double mx, double my) {
+        for (int i = ACTION_HITS.size() - 1; i >= 0; i--) {
+            ActionHit h = ACTION_HITS.get(i);
             if (h.contains(mx, my)) {
                 h.action().run();
                 return true;
@@ -267,9 +268,16 @@ public final class FusionWidgets {
         };
     }
 
+    /**
+     * @param mouseX,mouseY screen-space cursor position, or -1,-1 when there
+     *        is no cursor to speak of (drawing the plain HUD with no screen
+     *        open) - only the tracker panel's hover-revealed controls consult
+     *        this, so every other caller can pass -1,-1 freely.
+     */
     public static int[] draw(GuiGraphicsExtractor g, Font font, SquidUtilsConfig cfg,
-                             FusionEngine engine, Which which, boolean preview) {
-        if (which.isTracker()) return tracker(g, font, cfg);
+                             FusionEngine engine, Which which, boolean preview,
+                             int mouseX, int mouseY) {
+        if (which.isTracker()) return tracker(g, font, cfg, mouseX, mouseY);
         if (which.isShoppingList()) return shoppingList(g, font, engine, pos(cfg, which));
         if (which.isFuseOrder()) return fuseOrder(g, font, engine, pos(cfg, which));
         return which.isGraph()
@@ -278,52 +286,109 @@ public final class FusionWidgets {
     }
 
     // ------------------------------------------------------------------
-    /** Session totals, laid out like the trackers players already know. */
-    private static int[] tracker(GuiGraphicsExtractor g, Font font, SquidUtilsConfig cfg) {
+    /**
+     * Session totals, laid out like the trackers players already know - and,
+     * borrowing the idea from Feesh's own trackers, its pause/reset/view-mode
+     * controls only reveal themselves as clickable bracketed text when the
+     * panel is hovered, rather than sitting as permanent buttons on the
+     * settings screen.
+     */
+    private static int[] tracker(GuiGraphicsExtractor g, Font font, SquidUtilsConfig cfg,
+                                 int mouseX, int mouseY) {
         var t = dev.squidutils.SquidUtils.tracker();
         int lineH = font.lineHeight + 1;
+        boolean totalView = t.viewingTotal();
+
+        double coinsSpentV = totalView ? t.totalCoinsSpent() : t.coinsSpent();
+        double coinsGainedV = totalView ? t.totalCoinsGained() : t.coinsGained();
+        double profitV = totalView ? t.totalProfit() : t.profit();
+        double xpV = totalView ? t.totalXpGained() : t.xpGained();
+        long fusesV = totalView ? t.totalFuses() : t.fuses();
+        long shardsFusedV = totalView ? t.totalShardsFused() : t.shardsFused();
+        long boughtV = totalView ? t.totalShardsBought() : t.shardsBought();
+        long soldV = totalView ? t.totalShardsSold() : t.shardsSold();
+        long elapsedV = totalView ? t.totalElapsedSeconds() : t.elapsedSeconds();
 
         List<Cell> lines = new ArrayList<>();
-        lines.add(new Cell("Fusion session tracker", Draw.TITLE));
+        lines.add(new Cell("Fusion session tracker  [" + (totalView ? "Total" : "Session") + "]", Draw.TITLE));
         if (t.paused()) lines.add(new Cell("[Paused]", Draw.C_FILL));
 
         if (cfg.fusion.tracker.trackerCoins) {
-            lines.add(new Cell("Spent: " + Draw.coins(t.coinsSpent())
-                    + " (" + Draw.coins(t.perHour(t.coinsSpent())) + "/h)", Draw.C_COST));
-            lines.add(new Cell("Earned: " + Draw.coins(t.coinsGained())
-                    + " (" + Draw.coins(t.perHour(t.coinsGained())) + "/h)", Draw.C_PROFIT));
-            double net = t.profit();
-            lines.add(new Cell("Profit: " + (net >= 0 ? "+" : "") + Draw.coins(net)
-                    + " (" + Draw.coins(t.perHour(net)) + "/h)",
-                    net >= 0 ? Draw.C_PROFIT : 0xFFFF6666));
+            lines.add(new Cell("Spent: " + Draw.coins(coinsSpentV)
+                    + " (" + Draw.coins(t.perHour(coinsSpentV, elapsedV)) + "/h)", Draw.C_COST));
+            lines.add(new Cell("Earned: " + Draw.coins(coinsGainedV)
+                    + " (" + Draw.coins(t.perHour(coinsGainedV, elapsedV)) + "/h)", Draw.C_PROFIT));
+            lines.add(new Cell("Profit: " + (profitV >= 0 ? "+" : "") + Draw.coins(profitV)
+                    + " (" + Draw.coins(t.perHour(profitV, elapsedV)) + "/h)",
+                    profitV >= 0 ? Draw.C_PROFIT : 0xFFFF6666));
         }
         if (cfg.fusion.tracker.trackerXp) {
-            lines.add(new Cell("Hunting XP: " + Draw.units(t.xpGained())
-                    + " (" + Draw.units(t.perHour(t.xpGained())) + "/h)", Draw.C_XP));
+            lines.add(new Cell("Hunting XP: " + Draw.units(xpV)
+                    + " (" + Draw.units(t.perHour(xpV, elapsedV)) + "/h)", Draw.C_XP));
         }
         if (cfg.fusion.tracker.trackerShards) {
-            lines.add(new Cell("Fusions: " + t.fuses()
-                    + " (" + Draw.units(t.perHour(t.fuses())) + "/h)"
-                    + "  ·  " + t.shardsFused() + " shards out", Draw.C_FIT));
-            lines.add(new Cell("Bought " + t.shardsBought() + " · sold " + t.shardsSold(),
-                    Draw.C_VOLUME));
+            lines.add(new Cell("Fusions: " + fusesV
+                    + " (" + Draw.units(t.perHour(fusesV, elapsedV)) + "/h)"
+                    + "  ·  " + shardsFusedV + " shards out", Draw.C_FIT));
+            lines.add(new Cell("Bought " + boughtV + " · sold " + soldV, Draw.C_VOLUME));
         }
-        lines.add(new Cell("Elapsed: " + formatElapsed(t.elapsedSeconds()), Draw.DIM));
+        // Session, not yet armed, reads its own explanation instead of a flat
+        // 0s - see SessionTracker's class doc for why it waits to start.
+        lines.add(new Cell(!totalView && !t.started()
+                ? "Elapsed: not started - buy or fuse to begin"
+                : "Elapsed: " + formatElapsed(elapsedV), Draw.DIM));
 
         int width = 150;
         for (Cell c : lines) width = Math.max(width, font.width(c.text()));
+        String toggleText = totalView ? "[Click to view Session]" : "[Click to view Total]";
+        String pauseText = t.paused() ? "[Click to resume]" : "[Click to pause]";
+        String resetText = "[Click to reset]";
+        width = Math.max(width, font.width(toggleText));
+        width = Math.max(width, font.width(pauseText));
+        width = Math.max(width, font.width(resetText));
 
-        int height = lineH * lines.size() + 8;
-        begin(g, cfg.general.trackerPos);
+        int collapsedHeight = lineH * lines.size() + 8;
+        int expandedHeight = collapsedHeight + lineH * 3;
+        WidgetPos p = cfg.general.trackerPos;
+
+        // Hit-tested against the expanded footprint always, whether or not it
+        // is currently drawn: same top-left anchor, strictly taller, so this
+        // alone decides hover with no frame-lagged "was hovering" state
+        // needed - the collapsed box is already a subset of it.
+        boolean hovered = mouseX >= p.x && mouseY >= p.y
+                && mouseX <= p.x + Math.round((width + 8) * p.scale)
+                && mouseY <= p.y + Math.round(expandedHeight * p.scale);
+
+        int height = hovered ? expandedHeight : collapsedHeight;
+        begin(g, p);
         Draw.panel(g, width + 8, height, 0xC07FD4FF);
 
         int y = 4;
+        if (hovered) {
+            y = trackerControl(g, font, p, y, toggleText, t::toggleViewMode);
+            y = trackerControl(g, font, p, y, pauseText, t::togglePause);
+            y = trackerControl(g, font, p, y, resetText, t::reset);
+        }
         for (Cell c : lines) {
             g.text(font, c.text(), 4, y, c.colour());
             y += lineH;
         }
         end(g);
         return new int[]{width + 8, height};
+    }
+
+    /** One clickable control line on the tracker panel. Returns the y for
+     *  the line after it. */
+    private static int trackerControl(GuiGraphicsExtractor g, Font font, WidgetPos p, int y,
+                                      String text, Runnable action) {
+        g.text(font, text, 4, y, 0xFF7FD4FF);
+        ACTION_HITS.add(new ActionHit(
+                p.x + Math.round(4 * p.scale),
+                p.y + Math.round((y - 1) * p.scale),
+                Math.round(font.width(text) * p.scale),
+                Math.round((font.lineHeight + 2) * p.scale),
+                action));
+        return y + font.lineHeight + 1;
     }
 
     /**
@@ -479,7 +544,7 @@ public final class FusionWidgets {
     private static void deleteButton(GuiGraphicsExtractor g, Font font, int x, int y, WidgetPos p, Runnable action) {
         String glyph = " -";
         g.text(font, glyph, x, y, 0xFFFF6666);
-        DELETE_HITS.add(new DeleteHit(
+        ACTION_HITS.add(new ActionHit(
                 p.x + Math.round((x + 2) * p.scale),
                 p.y + Math.round((y - 1) * p.scale),
                 Math.round((DELETE_W - 2) * p.scale),

@@ -64,8 +64,12 @@ public class HudEditorScreen extends Screen {
             }
             shown++;
             WidgetPos p = FusionWidgets.pos(cfg, which);
+            // -1,-1 rather than the real cursor: a click here always drags the
+            // panel (see mouseClicked below), so showing the tracker's
+            // hover-revealed controls would promise an interaction this
+            // screen does not actually give you.
             int[] size = FusionWidgets.draw(g, minecraft.font, cfg,
-                    SquidUtils.engine(), which, true);
+                    SquidUtils.engine(), which, true, -1, -1);
 
             int w = Math.round(size[0] * p.scale);
             int h = Math.round(size[1] * p.scale);

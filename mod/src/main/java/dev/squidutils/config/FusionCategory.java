@@ -32,10 +32,6 @@ import java.util.Set;
  */
 public class FusionCategory {
 
-    /** Runnable ids for buttons, dispatched by SquidUtilsConfig. */
-    public static final int RUN_PAUSE = 1;
-    public static final int RUN_RESET = 2;
-
     /** Metric ids, matching the graph dropdown order. */
     public static final int M_PROFIT = 0, M_DEMAND = 1, M_XP_PER_K = 2;
 

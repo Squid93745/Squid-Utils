@@ -95,7 +95,9 @@ public final class FusionHud implements HudElement {
     public void extractRenderState(GuiGraphicsExtractor g, DeltaTracker delta) {
         Minecraft mc = Minecraft.getInstance();
         if (mc == null || mc.screen != null) return;   // handled by drawUnderScreen
-        drawAll(g, mc, false);
+        // No cursor without a screen open, so no panel can be "hovered" here -
+        // the tracker's own controls only reveal themselves with a menu open.
+        drawAll(g, mc, false, -1, -1);
     }
 
     /**
@@ -120,7 +122,7 @@ public final class FusionHud implements HudElement {
             FusionWidgets.clearHits();
             return;
         }
-        drawAll(g, mc, vis == ScreenVisibility.DIMMED);
+        drawAll(g, mc, vis == ScreenVisibility.DIMMED, mouseX, mouseY);
 
         if (vis == ScreenVisibility.FULL && cfg.general.showHud) {
             String shard = FusionWidgets.shardAt(mouseX, mouseY);
@@ -132,7 +134,7 @@ public final class FusionHud implements HudElement {
         }
     }
 
-    private void drawAll(GuiGraphicsExtractor g, Minecraft mc, boolean dimmed) {
+    private void drawAll(GuiGraphicsExtractor g, Minecraft mc, boolean dimmed, int mouseX, int mouseY) {
         SquidUtilsConfig cfg = config.get();
         if (cfg == null || !cfg.general.showHud || !cfg.fusion.general.enabled) return;
         Font font = mc.font;
@@ -144,7 +146,7 @@ public final class FusionHud implements HudElement {
                 bounds.remove(which);
                 continue;
             }
-            int[] size = FusionWidgets.draw(g, font, cfg, engine, which, false);
+            int[] size = FusionWidgets.draw(g, font, cfg, engine, which, false, mouseX, mouseY);
             WidgetPos p = FusionWidgets.pos(cfg, which);
             int w = Math.round(size[0] * p.scale);
             int h = Math.round(size[1] * p.scale);

@@ -1,11 +1,15 @@
 package dev.squidutils.fusion;
 
+import com.google.gson.Gson;
 import dev.squidutils.SquidUtils;
 import dev.squidutils.hud.ShoppingList;
+import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
 
-import java.util.HashSet;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.LinkedHashSet;
 import java.util.Locale;
 import java.util.Set;
@@ -13,7 +17,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Session totals for a fusion run: coins in, coins out, XP and fuses.
+ * Session totals for a fusion run: coins in, coins out, XP and fuses - plus
+ * a lifetime "Total" view alongside it, the way Feesh's own trackers work.
  *
  * <p>Only shard trades count. The bazaar messages are identical in shape for
  * every item, so the item name is checked against the known shard roster -
@@ -23,6 +28,21 @@ import java.util.regex.Pattern;
  * <p>Orders that fill in pieces are handled by counting each claim as it
  * arrives rather than assuming an order fills whole; a large buy order
  * routinely arrives as a dozen partial fills.
+ *
+ * <p>The session clock does not start at construction or at {@link #reset()}
+ * - it arms on the first bazaar shard purchase or fusion, whichever comes
+ * first, via {@link #start()}. Sitting in menus or hunting mobs before that
+ * point would otherwise count as "elapsed" against a session with nothing in
+ * it yet, understating every per-hour figure.
+ *
+ * <p>{@code total*} fields are the session fields' lifetime counterparts:
+ * updated alongside them on every event, but never touched by {@link
+ * #reset()}, and persisted to {@code tracker-stats.json} in the mod's config
+ * directory so they survive a restart. Elapsed time is the one figure that
+ * cannot just be summed the same way - {@link #priorElapsedSeconds} is the
+ * total from every session before this one (loaded once, frozen for the rest
+ * of this run except the fold-in {@link #reset()} does), and total elapsed is
+ * always computed as that plus the current session's own live elapsed.
  */
 public final class SessionTracker {
 
@@ -45,21 +65,22 @@ public final class SessionTracker {
      * The fusion result line, confirmed from a live capture:
      * {@code §5§lFUSION! §7You obtained a §fHoneyhog Shard§7! §d§lNEW!}
      * (single output) and {@code §5§lFUSION! §7You obtained §9Wild Hog Shard
-     * §8x2§7!} (multi-output, no article). This is the whole answer for both
+     * §8x2§7!} (multi-output, no article) - also seen with a trailing streak
+     * counter on repeated identical fusions, {@code §8(§7x§r2§8)} and so on,
+     * which the optional count group harmlessly leaves unconsumed rather than
+     * misreading as an output quantity. This is the whole answer for both
      * fuses and XP: the result shard's rarity gives the base XP exactly, so
-     * one reliable message covers both counters - there is no separate
-     * "+N Hunting XP" broadcast to read instead. (An earlier attempt assumed
-     * one existed, going by wiki text that turned out to describe something
-     * other than a chat/action-bar message - a live capture around an actual
-     * fusion showed nothing resembling it anywhere near these lines.)
+     * one reliable message covers both counters - an earlier attempt at a
+     * separate "+N Hunting XP" broadcast was based on wiki text that turned
+     * out to describe something other than a chat/action-bar message; a live
+     * capture around an actual fusion showed nothing resembling it nearby.
      *
-     * <p>Two things broke the original version of this pattern, both visible
-     * only once real text was captured: Hypixel bakes {@code §} formatting
-     * directly into the string content for its own messages rather than
-     * using separate style data, so {@code FUSION!} is not immediately
-     * followed by {@code You obtained} the way a hand-written guess would
-     * assume - stripped below, in {@link #onChat}, rather than patched into
-     * every pattern one at a time. And a single-output result is worded
+     * <p>{@code §} formatting is baked directly into Hypixel's own message
+     * text rather than carried as separate style data, so this can assume
+     * plain text only because {@link #onChat} strips it first - the original
+     * version of this pattern required {@code FUSION!} to be immediately
+     * followed by {@code You obtained}, which never matched because a colour
+     * code always sat in between. A single-output result is also worded
      * "a Honeyhog Shard", with an article the multi-output wording drops -
      * optional here for the same reason the {@code x<count>} suffix is.
      */
@@ -80,11 +101,14 @@ public final class SessionTracker {
     /** Shard display names, lowercased and stripped, mapped to their rarity. */
     private static final java.util.Map<String, String> SHARDS = new java.util.HashMap<>();
 
-    private long startedAt = System.currentTimeMillis();
+    // Session clock - armed by start(), not by construction or reset().
+    private boolean started;
+    private long startedAt;
     private long pausedTotal;
     private long pausedAt;
     private boolean paused;
 
+    // Session totals - cleared by reset().
     private double coinsSpent;
     private double coinsGained;
     private double xpGained;
@@ -93,8 +117,36 @@ public final class SessionTracker {
     private long fuses;
     private long shardsFused;   // shards produced, which is not one per fusion
 
+    // Lifetime totals - persisted, never cleared by reset(). See the class doc
+    // for how priorElapsedSeconds combines with the live session clock.
+    private double totalCoinsSpent;
+    private double totalCoinsGained;
+    private double totalXpGained;
+    private long totalShardsBought;
+    private long totalShardsSold;
+    private long totalFuses;
+    private long totalShardsFused;
+    private long priorElapsedSeconds;
+
+    /** Session vs Total - HUD view state only, not persisted. */
+    private boolean viewingTotal;
+
+    private final Path statsPath;
+
     private final Set<String> captured = new LinkedHashSet<>();
     private String lastOverlay = "";
+
+    public SessionTracker() {
+        Path dir = null;
+        try {
+            dir = FabricLoader.getInstance().getConfigDir().resolve(SquidUtils.MOD_ID);
+            Files.createDirectories(dir);
+        } catch (Exception e) {
+            SquidUtils.LOG.warn("[squidutils] could not resolve tracker stats path", e);
+        }
+        statsPath = dir == null ? null : dir.resolve("tracker-stats.json");
+        load();
+    }
 
     // ------------------------------------------------------------------
     /** Supply the shard roster so trades in other items can be ignored. */
@@ -127,13 +179,30 @@ public final class SessionTracker {
     }
 
     // ------------------------------------------------------------------
-    public void reset() {
+    /** Arms the session clock on the first qualifying event - see the class
+     *  doc. A no-op once already started, so every caller can just call this
+     *  unconditionally at the top of its branch. */
+    private void start() {
+        if (started) return;
+        started = true;
         startedAt = System.currentTimeMillis();
         pausedTotal = 0;
-        pausedAt = paused ? startedAt : 0;
+        if (paused) pausedAt = startedAt;
+    }
+
+    public void reset() {
+        // Folded in before clearing, so Total's elapsed time does not lose
+        // whatever this session had already counted toward it.
+        priorElapsedSeconds += elapsedSeconds();
+
+        started = false;
+        startedAt = 0;
+        pausedTotal = 0;
+        pausedAt = paused ? System.currentTimeMillis() : 0;
         coinsSpent = coinsGained = xpGained = 0;
         shardsBought = shardsSold = fuses = shardsFused = 0;
         captured.clear();
+        save();
     }
 
     public void togglePause() {
@@ -147,14 +216,22 @@ public final class SessionTracker {
     }
 
     public boolean paused() { return paused; }
+    public boolean started() { return started; }
+
+    public boolean viewingTotal() { return viewingTotal; }
+    public void toggleViewMode() { viewingTotal = !viewingTotal; }
 
     public long elapsedSeconds() {
+        if (!started) return 0;
         long now = paused ? pausedAt : System.currentTimeMillis();
         return Math.max(0, (now - startedAt - pausedTotal) / 1000);
     }
 
-    public double perHour(double total) {
-        long secs = elapsedSeconds();
+    public long totalElapsedSeconds() {
+        return priorElapsedSeconds + elapsedSeconds();
+    }
+
+    public double perHour(double total, long secs) {
         if (secs < 5) return 0;
         return total * 3600.0 / secs;
     }
@@ -167,6 +244,16 @@ public final class SessionTracker {
     public long shardsSold() { return shardsSold; }
     public long fuses() { return fuses; }
     public long shardsFused() { return shardsFused; }
+
+    public double totalCoinsSpent() { return totalCoinsSpent; }
+    public double totalCoinsGained() { return totalCoinsGained; }
+    public double totalProfit() { return totalCoinsGained - totalCoinsSpent; }
+    public double totalXpGained() { return totalXpGained; }
+    public long totalShardsBought() { return totalShardsBought; }
+    public long totalShardsSold() { return totalShardsSold; }
+    public long totalFuses() { return totalFuses; }
+    public long totalShardsFused() { return totalShardsFused; }
+
     public Set<String> captured() { return captured; }
 
     // ------------------------------------------------------------------
@@ -199,24 +286,40 @@ public final class SessionTracker {
         Matcher m = BOUGHT.matcher(text);
         if (m.find()) {
             if (isShard(m.group(2))) {
-                shardsBought += parseLong(m.group(1));
-                coinsSpent += parseDouble(m.group(3));
+                start();
+                long qty = parseLong(m.group(1));
+                double coins = parseDouble(m.group(3));
+                shardsBought += qty;
+                coinsSpent += coins;
+                totalShardsBought += qty;
+                totalCoinsSpent += coins;
+                save();
             }
             return;
         }
         m = SOLD.matcher(text);
         if (m.find()) {
             if (isShard(m.group(2))) {
-                shardsSold += parseLong(m.group(1));
-                coinsGained += parseDouble(m.group(3));
+                long qty = parseLong(m.group(1));
+                double coins = parseDouble(m.group(3));
+                shardsSold += qty;
+                coinsGained += coins;
+                totalShardsSold += qty;
+                totalCoinsGained += coins;
+                save();
             }
             return;
         }
         m = CLAIMED_COINS.matcher(text);
         if (m.find()) {
             if (isShard(m.group(3))) {
-                shardsSold += parseLong(m.group(2));
-                coinsGained += parseDouble(m.group(1));
+                long qty = parseLong(m.group(2));
+                double coins = parseDouble(m.group(1));
+                shardsSold += qty;
+                coinsGained += coins;
+                totalShardsSold += qty;
+                totalCoinsGained += coins;
+                save();
             }
             return;
         }
@@ -226,19 +329,29 @@ public final class SessionTracker {
                 long qty = parseLong(m.group(1));
                 double coins = parseDouble(m.group(3));
                 if (text.contains("bought for")) {
+                    start();
                     shardsBought += qty;
                     coinsSpent += coins;
+                    totalShardsBought += qty;
+                    totalCoinsSpent += coins;
                 } else {
                     shardsSold += qty;
                     coinsGained += coins;
+                    totalShardsSold += qty;
+                    totalCoinsGained += coins;
                 }
+                save();
             }
             return;
         }
         m = FUSION.matcher(text);
         if (m.find()) {
+            start();
+            long produced = m.group(2) != null ? parseLong(m.group(2)) : 1;
             fuses++;
-            shardsFused += m.group(2) != null ? parseLong(m.group(2)) : 1;
+            shardsFused += produced;
+            totalFuses++;
+            totalShardsFused += produced;
             ShoppingList.onFusionCompleted(m.group(1));
 
             // XP is granted per fusion by the rarity of the result, so the one
@@ -249,11 +362,14 @@ public final class SessionTracker {
                 float wisdom = 0;
                 var cfg = SquidUtils.config();
                 if (cfg != null) wisdom = cfg.fusion.general.huntingWisdom;
-                xpGained += dev.squidutils.fusion.engine.Scorer.xpPerFuse(rarity, wisdom);
+                double xp = dev.squidutils.fusion.engine.Scorer.xpPerFuse(rarity, wisdom);
+                xpGained += xp;
+                totalXpGained += xp;
             } else {
                 SquidUtils.LOG.info("[squidutils] fusion result not recognised: {}",
                         m.group(1));
             }
+            save();
             return;
         }
 
@@ -298,7 +414,8 @@ public final class SessionTracker {
                         + "§7 action bar · capture-all is §f"
                         + (captureAll ? "on" : "off")));
         player.sendSystemMessage(Component.literal(
-                "§d[Squid Utils] §7counters — spent §f" + (long) coinsSpent
+                "§d[Squid Utils] §7counters — started §f" + started
+                        + "§7, spent §f" + (long) coinsSpent
                         + "§7, earned §f" + (long) coinsGained
                         + "§7, xp §f" + (long) xpGained
                         + "§7, fused §f" + fuses));
@@ -314,6 +431,63 @@ public final class SessionTracker {
         int i = 1;
         for (String s : captured) {
             player.sendSystemMessage(Component.literal("§e" + (i++) + ". §f" + s));
+        }
+    }
+
+    // ------------------------------------------------------------------
+    /** The persisted shape of the lifetime totals - see the class doc for
+     *  why elapsed time needs {@link #priorElapsedSeconds} instead of just
+     *  being summed like every other field. */
+    private static final class SaveData {
+        double totalCoinsSpent;
+        double totalCoinsGained;
+        double totalXpGained;
+        long totalShardsBought;
+        long totalShardsSold;
+        long totalFuses;
+        long totalShardsFused;
+        long priorElapsedSeconds;
+    }
+
+    private void load() {
+        if (statsPath == null || !Files.exists(statsPath)) return;
+        try (var reader = Files.newBufferedReader(statsPath, StandardCharsets.UTF_8)) {
+            SaveData d = new Gson().fromJson(reader, SaveData.class);
+            if (d == null) return;
+            totalCoinsSpent = d.totalCoinsSpent;
+            totalCoinsGained = d.totalCoinsGained;
+            totalXpGained = d.totalXpGained;
+            totalShardsBought = d.totalShardsBought;
+            totalShardsSold = d.totalShardsSold;
+            totalFuses = d.totalFuses;
+            totalShardsFused = d.totalShardsFused;
+            priorElapsedSeconds = d.priorElapsedSeconds;
+        } catch (Exception e) {
+            SquidUtils.LOG.warn("[squidutils] could not read tracker-stats.json", e);
+        }
+    }
+
+    /** Called after every mutating event - these are infrequent (a handful a
+     *  second at the very busiest) and the file is tiny, so there is no need
+     *  to batch or throttle it. */
+    private void save() {
+        if (statsPath == null) return;
+        SaveData d = new SaveData();
+        d.totalCoinsSpent = totalCoinsSpent;
+        d.totalCoinsGained = totalCoinsGained;
+        d.totalXpGained = totalXpGained;
+        d.totalShardsBought = totalShardsBought;
+        d.totalShardsSold = totalShardsSold;
+        d.totalFuses = totalFuses;
+        d.totalShardsFused = totalShardsFused;
+        // Not written back into the in-memory field - see the class doc.
+        // Only ever recomputed fresh for the file, so a later event this same
+        // run does not double-count today's elapsed time on top of itself.
+        d.priorElapsedSeconds = priorElapsedSeconds + elapsedSeconds();
+        try {
+            Files.writeString(statsPath, new Gson().toJson(d), StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            SquidUtils.LOG.warn("[squidutils] could not write tracker-stats.json", e);
         }
     }
 
