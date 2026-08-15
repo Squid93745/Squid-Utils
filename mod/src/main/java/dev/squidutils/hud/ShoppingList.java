@@ -1,5 +1,6 @@
 package dev.squidutils.hud;
 
+import dev.squidutils.SquidUtils;
 import dev.squidutils.fusion.engine.RouteSolver;
 
 import java.util.ArrayList;
@@ -43,6 +44,58 @@ public final class ShoppingList {
 
     public static void remove(int shardIndex) {
         ITEMS.remove(shardIndex);
+    }
+
+    public static void removeStep(int recipeIndex) {
+        STEP_CRAFTS.remove(recipeIndex);
+    }
+
+    /**
+     * A fusion just completed (from {@link dev.squidutils.fusion.SessionTracker}'s
+     * chat parsing) - if the list is tracking a step that produces this
+     * shard, count one craft of it done, clearing the row once none are left.
+     *
+     * <p>Only the fuse-order step is touched, never the buy list: a
+     * completed fusion consumes shards you already bought or fused, it does
+     * not un-buy anything, and this list has no reliable way to tell which
+     * specific buy rows fed this particular fusion versus some other queued
+     * one that happens to share an input.
+     */
+    public static void onFusionCompleted(String shardName) {
+        var engine = SquidUtils.engine();
+        if (engine == null || shardName == null) return;
+        var data = engine.data();
+
+        // The chat line names the shard with Hypixel's own " Shard" suffix
+        // ("Honeyhog Shard"); FusionData's names never carry it ("Honeyhog") -
+        // same mismatch ShardTooltip already strips before comparing.
+        String bare = shardName.endsWith(" Shard")
+                ? shardName.substring(0, shardName.length() - " Shard".length())
+                : shardName;
+
+        int shardIndex = -1;
+        for (int i = 0; i < data.shardCount(); i++) {
+            if (data.shard(i).name().equalsIgnoreCase(bare)) {
+                shardIndex = i;
+                break;
+            }
+        }
+        if (shardIndex < 0) return;
+
+        // Found first, mutated after: STEP_CRAFTS.merge() below would throw
+        // ConcurrentModificationException if called while still iterating
+        // its own keySet.
+        Integer matchedRecipe = null;
+        for (int recipe : STEP_CRAFTS.keySet()) {
+            if (data.result(recipe) == shardIndex) {
+                matchedRecipe = recipe;
+                break;
+            }
+        }
+        if (matchedRecipe == null) return;
+
+        int remaining = STEP_CRAFTS.merge(matchedRecipe, -1, Integer::sum);
+        if (remaining <= 0) STEP_CRAFTS.remove(matchedRecipe);
     }
 
     public static void clear() {

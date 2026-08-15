@@ -92,9 +92,20 @@ public final class FusionWidgets {
         }
     }
 
+    /** A row's manual-delete button, in screen-space pixels - the shopping
+     *  list and fuse order panels' own "-", since right-click-to-remove on
+     *  the shopping list has no visible affordance and the fuse order panel
+     *  never had a remove gesture at all. */
+    private record DeleteHit(int x, int y, int w, int h, Runnable action) {
+        boolean contains(double mx, double my) {
+            return mx >= x && mx <= x + w && my >= y && my <= y + h;
+        }
+    }
+
     private static final List<Hit> HITS = new ArrayList<>();
     private static final List<RowHit> ROW_HITS = new ArrayList<>();
     private static final List<HeaderHit> HEADER_HITS = new ArrayList<>();
+    private static final List<DeleteHit> DELETE_HITS = new ArrayList<>();
 
     /**
      * Which column each table is sorted by, and which direction - session-only
@@ -110,9 +121,24 @@ public final class FusionWidgets {
         HITS.clear();
         ROW_HITS.clear();
         HEADER_HITS.clear();
+        DELETE_HITS.clear();
     }
 
     public static List<Hit> hits() { return HITS; }
+
+    /** Runs and consumes the delete button under the cursor, if any - checked
+     *  first in the click handler, since a delete button can sit on top of a
+     *  row that would otherwise open the bazaar. */
+    public static boolean handleDeleteClick(double mx, double my) {
+        for (int i = DELETE_HITS.size() - 1; i >= 0; i--) {
+            DeleteHit h = DELETE_HITS.get(i);
+            if (h.contains(mx, my)) {
+                h.action().run();
+                return true;
+            }
+        }
+        return false;
+    }
 
     /** The shard name under the cursor, or null. */
     public static String shardAt(double mx, double my) {
@@ -326,7 +352,7 @@ public final class FusionWidgets {
         String title = entries.isEmpty() ? "Shopping list" : "Shopping list  (" + Draw.coins(total) + ")";
 
         int width = font.width(title);
-        for (String line : lineTexts) width = Math.max(width, ICON + 6 + font.width(line));
+        for (String line : lineTexts) width = Math.max(width, ICON + 6 + font.width(line) + DELETE_W);
         String empty = "empty - \"Add to shopping list\" on a route screen";
         if (entries.isEmpty()) width = Math.max(width, font.width(empty));
 
@@ -352,6 +378,9 @@ public final class FusionWidgets {
                         Math.round((ICON + 6 + font.width(lineTexts.get(i))) * p.scale),
                         Math.round((font.lineHeight + 2) * p.scale),
                         s.name(), e.units(), e.shardIndex()));
+                int shardIndex = e.shardIndex();
+                deleteButton(g, font, 4 + ICON + 6 + font.width(lineTexts.get(i)), y, p,
+                        () -> ShoppingList.remove(shardIndex));
                 y += lineH;
             }
         }
@@ -377,7 +406,7 @@ public final class FusionWidgets {
 
         int width = font.width(title);
         for (var step : steps) {
-            width = Math.max(width, fuseOrderLineWidth(font, data, step));
+            width = Math.max(width, fuseOrderLineWidth(font, data, step) + DELETE_W);
         }
         if (steps.isEmpty()) width = Math.max(width, font.width(empty));
 
@@ -416,7 +445,7 @@ public final class FusionWidgets {
 
     /** One fuse-order row: crafts-count prefix, then a fusion label with each
      *  shard name clickable for the bazaar - same building blocks {@link
-     *  #drawLabel} uses for a plain table row. */
+     *  #drawLabel} uses for a plain table row - plus a manual delete button. */
     private static void drawFuseOrderRow(GuiGraphicsExtractor g, Font font, FusionData data,
                                          ShoppingList.StepEntry step, int x, int y, WidgetPos p) {
         int r = step.recipeIndex();
@@ -439,7 +468,23 @@ public final class FusionWidgets {
             cx = name(g, font, cx, y, sb.name(), p);
         }
         cx = plain(g, font, cx, y, " → " + data.qty(r) + "x ");
-        name(g, font, cx, y, sr.name(), p);
+        cx = name(g, font, cx, y, sr.name(), p);
+        deleteButton(g, font, cx, y, p, () -> ShoppingList.removeStep(r));
+    }
+
+    private static final int DELETE_W = 12;
+
+    /** A small red "-" that removes the row it is drawn on - the shopping
+     *  list and fuse order panels' own manual-delete affordance. */
+    private static void deleteButton(GuiGraphicsExtractor g, Font font, int x, int y, WidgetPos p, Runnable action) {
+        String glyph = " -";
+        g.text(font, glyph, x, y, 0xFFFF6666);
+        DELETE_HITS.add(new DeleteHit(
+                p.x + Math.round((x + 2) * p.scale),
+                p.y + Math.round((y - 1) * p.scale),
+                Math.round((DELETE_W - 2) * p.scale),
+                Math.round((font.lineHeight + 2) * p.scale),
+                action));
     }
 
     private static String formatElapsed(long secs) {

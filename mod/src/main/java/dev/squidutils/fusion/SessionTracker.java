@@ -1,6 +1,7 @@
 package dev.squidutils.fusion;
 
 import dev.squidutils.SquidUtils;
+import dev.squidutils.hud.ShoppingList;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
 
@@ -238,6 +239,7 @@ public final class SessionTracker {
         if (m.find()) {
             fuses++;
             shardsFused += m.group(2) != null ? parseLong(m.group(2)) : 1;
+            ShoppingList.onFusionCompleted(m.group(1));
 
             // XP is granted per fusion by the rarity of the result, so the one
             // message gives both counters. Falls back to nothing rather than a

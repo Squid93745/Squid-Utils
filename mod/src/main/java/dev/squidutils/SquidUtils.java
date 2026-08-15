@@ -170,6 +170,11 @@ public class SquidUtils implements ClientModInitializer {
                                 }
                                 if (dev.squidutils.fusion.hud.FusionWidgets
                                         .handleHeaderClick(event.x(), event.y())) return false;
+                                // Checked ahead of everything else a row's own
+                                // area might otherwise do (open the bazaar, open
+                                // a route) - the delete button sits on top of it.
+                                if (dev.squidutils.fusion.hud.FusionWidgets
+                                        .handleDeleteClick(event.x(), event.y())) return false;
                                 int route = dev.squidutils.fusion.hud.FusionWidgets
                                         .multiStepRowAt(event.x(), event.y());
                                 if (route >= 0) {
