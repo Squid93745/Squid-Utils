@@ -41,21 +41,33 @@ public final class SessionTracker {
             "Claimed\\s+([\\d,.]+)\\s+coins?\\s+from\\s+selling\\s+([\\d,]+)x?\\s+(.+?)\\s+at");
 
     /**
-     * The fusion result line, confirmed in game:
-     * {@code FUSION! You obtained Tempest Shard x2! NEW!}
-     *
-     * <p>This is the whole answer for both fuses and XP. Scraping Hunting XP
-     * off the action bar never worked, and would have been fragile anyway -
-     * the bar repeats and rounds. The result shard's rarity gives the base XP
-     * exactly, so one reliable message replaces two unreliable ones.
+     * The actual per-fusion XP grant, documented on the wiki against shard
+     * rarity: {@code +75 Hunting XP} for a common result, scaling up to
+     * {@code +1,000 Hunting XP} for a legendary one - matching this project's
+     * own base-XP table exactly. This replaces computing XP from a wisdom
+     * formula this mod maintains separately: the game already states the
+     * true number directly, so reading it is strictly more reliable, and one
+     * match is one fusion full stop - counting matches answers "how many
+     * fusions" without needing to know which shard even dropped. Whichever
+     * channel Hypixel puts this on, both chat and the action bar are already
+     * checked above; the repeat-on-the-action-bar guard (skipping an overlay
+     * line identical to the last one) already protects against over-counting
+     * if it repeats for a few ticks the way skill XP bars do.
+     */
+    private static final Pattern HUNTING_XP = Pattern.compile("\\+([\\d,]+)\\s*Hunting XP");
+
+    /**
+     * The fusion result line - an earlier, unconfirmed guess at the message
+     * above, kept only as a best-effort source for {@code shardsFused}, the
+     * one figure {@link #HUNTING_XP} cannot recover (XP is granted per
+     * fusion, not per output shard). No longer touches {@code fuses} or
+     * {@code xpGained} - {@link #HUNTING_XP} owns both now, and double
+     * counting from two patterns matching the same underlying event was the
+     * risk of leaving this wired to them too.
      *
      * <p>The {@code x<count>} suffix is optional: a fusion that yields a
      * single shard drops it entirely rather than writing {@code x1}, the same
-     * way Hypixel's own item-lore convention omits a count of one. Requiring
-     * it unconditionally meant every one-output fusion (a large share of the
-     * recipe list - "5x A + 5x B -> 1x C" is at least as common as "-> 2x C")
-     * silently fell through to the unparsed-line capture instead of counting
-     * at all, which is why both counters undercounted so heavily.
+     * way Hypixel's own item-lore convention omits a count of one.
      */
     private static final Pattern FUSION = Pattern.compile(
             "FUSION!\\s*You obtained\\s+(.+?)(?:\\s*x\\s*(\\d+))?!");
@@ -97,11 +109,6 @@ public final class SessionTracker {
         for (var e : nameToRarity.entrySet()) {
             SHARDS.put(normalise(e.getKey()), e.getValue());
         }
-    }
-
-    /** Rarity of a shard by its chat name, or null if unknown. */
-    public static String rarityOf(String itemName) {
-        return itemName == null ? null : SHARDS.get(normalise(itemName));
     }
 
     /**
@@ -222,26 +229,27 @@ public final class SessionTracker {
             }
             return;
         }
-        m = FUSION.matcher(text);
+        // Checked independently rather than as mutually-exclusive early
+        // returns like the patterns above: unlike Bought/Sold/Claimed, these
+        // two are guesses at possibly the very same underlying broadcast, so
+        // either or both may match one line and each should still update its
+        // own counter.
+        boolean matched = false;
+
+        m = HUNTING_XP.matcher(text);
         if (m.find()) {
             fuses++;
-            shardsFused += m.group(2) != null ? parseLong(m.group(2)) : 1;
-
-            // XP is granted per fusion by the rarity of the result, so the one
-            // message gives both counters. Falls back to nothing rather than a
-            // guess when the shard name is not recognised.
-            String rarity = rarityOf(m.group(1));
-            if (rarity != null) {
-                float wisdom = 0;
-                var cfg = SquidUtils.config();
-                if (cfg != null) wisdom = cfg.fusion.general.huntingWisdom;
-                xpGained += dev.squidutils.fusion.engine.Scorer.xpPerFuse(rarity, wisdom);
-            } else {
-                SquidUtils.LOG.info("[squidutils] fusion result not recognised: {}",
-                        m.group(1));
-            }
-            return;
+            xpGained += parseDouble(m.group(1));
+            matched = true;
         }
+
+        m = FUSION.matcher(text);
+        if (m.find()) {
+            shardsFused += m.group(2) != null ? parseLong(m.group(2)) : 1;
+            matched = true;
+        }
+
+        if (matched) return;
 
         capture(text);
     }
