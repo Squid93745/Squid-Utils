@@ -54,6 +54,7 @@ public final class FusionEngine {
     private volatile Brain brain;
     private volatile RouteSolver.Costs routeCosts;
     private volatile RouteSolver.Costs directCosts;
+    private volatile double[] buyCosts;
     private volatile List<Scorer.Opportunity> current = List.of();
     private volatile List<Scorer.Opportunity> byCoins = List.of();
     private volatile List<Scorer.Opportunity> byXp = List.of();
@@ -125,6 +126,14 @@ public final class FusionEngine {
             // The plain "cheapest fusion" tooltip line, before that toggle -
             // one honest hop, not the recursively-optimal chain above.
             directCosts = RouteSolver.directCheapest(data, unitBuyCost);
+            // The shard's own buy price alone, with no fusion mixed in - the
+            // "show cheapest price" tooltip mode needs this on its own to
+            // compare against a one-hop fusion recipe; routeCosts already
+            // folds it in for the recursive case, but discards it once a
+            // fusion beats it, so it cannot be recovered from there.
+            double[] buy = new double[data.shardCount()];
+            for (int i = 0; i < buy.length; i++) buy[i] = unitBuyCost.applyAsDouble(i);
+            buyCosts = buy;
 
             // Three independent views over one evaluation. Scoring 135k recipes
             // three times would be wasteful; re-sorting the result is trivial.
@@ -269,5 +278,6 @@ public final class FusionEngine {
     public FusionData data() { return data; }
     public RouteSolver.Costs routeCosts() { return routeCosts; }
     public RouteSolver.Costs directCosts() { return directCosts; }
+    public double[] buyCosts() { return buyCosts; }
     public int pricedProducts() { return bazaar.products().size(); }
 }

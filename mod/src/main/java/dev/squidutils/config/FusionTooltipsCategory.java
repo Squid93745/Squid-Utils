@@ -19,6 +19,16 @@ public class FusionTooltipsCategory {
     public boolean tooltipCheapest = true;
 
     @Expose
+    @ConfigOption(name = "Show cheapest price",
+            desc = "Compare buying this shard outright (bazaar, or a known NPC) "
+                    + "against fusing it, and show whichever actually comes out "
+                    + "cheaper. Turn off to always show a fusion recipe instead, "
+                    + "even when just buying it would be cheaper.")
+    @ConfigEditorBoolean
+    @SearchTag("cheapest price buy npc bazaar compare tooltip")
+    public boolean tooltipCheapestPrice = true;
+
+    @Expose
     @ConfigOption(name = "Include multi-step routes",
             desc = "Also consider fusing the inputs when that comes out cheaper "
                     + "than buying them, instead of one direct fusion.")

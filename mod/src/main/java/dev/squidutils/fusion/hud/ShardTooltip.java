@@ -3,6 +3,7 @@ package dev.squidutils.fusion.hud;
 import dev.squidutils.SquidUtils;
 import dev.squidutils.fusion.data.FusionData;
 import dev.squidutils.fusion.data.NpcPrices;
+import dev.squidutils.fusion.engine.FusionEngine;
 import dev.squidutils.fusion.engine.RouteSolver;
 import dev.squidutils.hud.Draw;
 import net.minecraft.ChatFormatting;
@@ -14,10 +15,10 @@ import net.minecraft.world.item.TooltipFlag;
 import java.util.List;
 
 /**
- * Adds a "cheapest fusion" line to a shard's own bazaar tooltip, next to the
- * buy/sell prices Hypixel already lists there - the feature the two toggles
- * in {@code FusionTooltipsCategory} were added for, before either was wired
- * up to anything.
+ * Adds a "cheapest" line to a shard's own bazaar tooltip, next to the
+ * buy/sell prices Hypixel already lists there - the feature the toggles in
+ * {@code FusionTooltipsCategory} were added for, before any were wired up to
+ * anything.
  *
  * <p>Deliberately separate from the panel-hover tooltip {@link FusionHud}
  * draws: that one only exists while a screen with one of this mod's own
@@ -65,58 +66,102 @@ public final class ShardTooltip {
         }
         if (idx < 0) return;
 
-        double cheapestKnown = cfg.fusion.tooltips.tooltipMultiStep
-                ? addMultiStepLine(data, engine.routeCosts(), idx, lines)
-                : addDirectLine(data, engine.directCosts(), idx, lines);
+        boolean multiStep = cfg.fusion.tooltips.tooltipMultiStep;
+        lines.add(cfg.fusion.tooltips.tooltipCheapestPrice
+                ? cheapestPriceLine(data, engine, idx, multiStep)
+                : cheapestFuseLine(data, engine, idx, multiStep));
+    }
+
+    /**
+     * "Show cheapest price" ON (the default): whichever is actually cheapest
+     * for this shard - buying it outright (bazaar, or a known NPC) or fusing
+     * it - not just a fusion recipe that turns out to cost more than buying
+     * the result would have.
+     */
+    private static Component cheapestPriceLine(FusionData data, FusionEngine engine, int idx, boolean multiStep) {
+        double fuseCost = Double.POSITIVE_INFINITY;
+        Component fuseLine = null;
+        int fuseVia = RouteSolver.BUY;
+        boolean fuseIsRoute = false;
+
+        if (multiStep) {
+            var routeCosts = engine.routeCosts();
+            if (routeCosts != null) {
+                int via = routeCosts.via()[idx];
+                double cost = routeCosts.cost()[idx];
+                if (via != RouteSolver.BUY) {
+                    // solve() already folds the buy price into cost/via -
+                    // BUY only loses here when some fusion genuinely beats
+                    // it, so this is already the cheaper of the two.
+                    fuseCost = cost;
+                    fuseLine = multiStepLine(data, routeCosts, via);
+                    fuseVia = via;
+                    fuseIsRoute = true;
+                } else if (Double.isFinite(cost)) {
+                    fuseCost = cost;
+                    fuseLine = buyDirectLine(cost);
+                }
+            }
+        } else {
+            var direct = engine.directCosts();
+            double[] buyCosts = engine.buyCosts();
+            double buyCost = buyCosts != null && idx < buyCosts.length ? buyCosts[idx] : Double.POSITIVE_INFINITY;
+            int recipe = direct == null ? RouteSolver.BUY : direct.via()[idx];
+            // directCheapest() never compares against the buy price (unlike
+            // solve() above), so that comparison has to happen here instead.
+            if (recipe != RouteSolver.BUY && direct.cost()[idx] <= buyCost) {
+                fuseCost = direct.cost()[idx];
+                fuseLine = Component.literal("Cheapest fusion: ").withStyle(ChatFormatting.LIGHT_PURPLE)
+                        .append(fuseText(data, recipe))
+                        .append(Component.literal(" (" + Draw.coins(fuseCost) + ")").withStyle(ChatFormatting.GOLD));
+            } else if (Double.isFinite(buyCost)) {
+                fuseCost = buyCost;
+                fuseLine = buyDirectLine(buyCost);
+            }
+        }
 
         var npc = NpcPrices.of(data.shard(idx).name());
-        if (npc != null && npc.coins() < cheapestKnown) {
-            lines.add(Component.literal("Cheaper from NPC: ").withStyle(ChatFormatting.LIGHT_PURPLE)
-                    .append(Component.literal(npc.npc() + ": ").withStyle(ChatFormatting.WHITE))
-                    .append(Component.literal(Draw.coins(npc.coins())).withStyle(ChatFormatting.GOLD)));
+        if (npc != null && npc.coins() < fuseCost) return npcLine(npc);
+
+        if (fuseIsRoute) {
+            hoveredRootRecipe = fuseVia;
+            hoveredAtMillis = System.currentTimeMillis();
         }
+        return fuseLine != null ? fuseLine : noRouteLine("Cheapest: ");
     }
 
-    /** Adds the one-hop tooltip line and returns the per-unit cost it is
-     *  based on, or +infinity when {@link #directLine} fell back to "no
-     *  data" - {@link RouteSolver#directCheapest} only ever compares fusion
-     *  recipes against each other, never against the shard's own buy price,
-     *  so a BUY result there really does mean nothing priced was found. */
-    private static double addDirectLine(FusionData data, RouteSolver.Costs direct, int shardIndex,
-                                        List<Component> lines) {
-        lines.add(directLine(data, direct, shardIndex));
-        if (direct == null || direct.via()[shardIndex] == RouteSolver.BUY) return Double.POSITIVE_INFINITY;
-        return direct.cost()[shardIndex];
-    }
-
-    /** Adds the multi-step tooltip line and returns the per-unit cost it is
-     *  based on. Unlike {@link #addDirectLine}, {@link RouteSolver#solve}
-     *  does compare every fusion against the shard's own buy price, so a BUY
-     *  result here usually means "buying already beats every route" - a
-     *  real, common answer worth its own line, not the same "no data"
-     *  fallback {@link #addDirectLine} uses when it truly has nothing. */
-    private static double addMultiStepLine(FusionData data, RouteSolver.Costs routeCosts, int idx,
-                                           List<Component> lines) {
-        if (routeCosts == null) {
-            lines.add(noRouteLine("Cheapest route: "));
-            return Double.POSITIVE_INFINITY;
-        }
-        int via = routeCosts.via()[idx];
-        double perUnit = routeCosts.cost()[idx];
-        if (via == RouteSolver.BUY) {
-            if (!Double.isFinite(perUnit)) {
-                lines.add(noRouteLine("Cheapest route: "));
-                return Double.POSITIVE_INFINITY;
+    /**
+     * "Show cheapest price" OFF: always describes a fusion recipe, even when
+     * buying the shard outright would come out cheaper - the tooltip's
+     * original behaviour, for whoever specifically wants the recipe.
+     */
+    private static Component cheapestFuseLine(FusionData data, FusionEngine engine, int idx, boolean multiStep) {
+        if (multiStep) {
+            var routeCosts = engine.routeCosts();
+            // solve() only keeps a route once it beats buying, so once via
+            // is BUY there is no "second-best fusion, ignoring the buy
+            // price" left to recover - falling back to the one-hop recipe
+            // below is the only option.
+            if (routeCosts != null && routeCosts.via()[idx] != RouteSolver.BUY) {
+                int via = routeCosts.via()[idx];
+                hoveredRootRecipe = via;
+                hoveredAtMillis = System.currentTimeMillis();
+                return multiStepLine(data, routeCosts, via);
             }
-            lines.add(Component.literal("Cheapest: ").withStyle(ChatFormatting.LIGHT_PURPLE)
-                    .append(Component.literal("buy directly").withStyle(ChatFormatting.WHITE))
-                    .append(Component.literal(" (" + Draw.coins(perUnit) + ")").withStyle(ChatFormatting.GOLD)));
-            return perUnit;
         }
-        hoveredRootRecipe = via;
-        hoveredAtMillis = System.currentTimeMillis();
-        lines.add(multiStepLine(data, routeCosts, via));
-        return perUnit;
+        return directLine(data, engine.directCosts(), idx);
+    }
+
+    private static Component buyDirectLine(double cost) {
+        return Component.literal("Cheapest: ").withStyle(ChatFormatting.LIGHT_PURPLE)
+                .append(Component.literal("buy directly").withStyle(ChatFormatting.WHITE))
+                .append(Component.literal(" (" + Draw.coins(cost) + ")").withStyle(ChatFormatting.GOLD));
+    }
+
+    private static Component npcLine(NpcPrices.Entry npc) {
+        return Component.literal("Cheapest: ").withStyle(ChatFormatting.LIGHT_PURPLE)
+                .append(Component.literal("NPC (" + npc.npc() + ")").withStyle(ChatFormatting.WHITE))
+                .append(Component.literal(" (" + Draw.coins(npc.coins()) + ")").withStyle(ChatFormatting.GOLD));
     }
 
     /** Every shard gets a line, even when no priced route is available right
@@ -137,7 +182,9 @@ public final class ShardTooltip {
     }
 
     /** One hop: the cheapest recipe buying both inputs straight off the
-     *  bazaar, exactly as {@link RouteSolver#directCheapest} finds it. */
+     *  bazaar, exactly as {@link RouteSolver#directCheapest} finds it - never
+     *  compared against the shard's own buy price, unlike the "cheapest
+     *  price" mode above. */
     private static Component directLine(FusionData data, RouteSolver.Costs direct, int shardIndex) {
         if (direct == null) return noRouteLine("Cheapest fusion: ");
         int recipe = direct.via()[shardIndex];
@@ -150,9 +197,9 @@ public final class ShardTooltip {
     }
 
     /** The recursively cheapest full route, which may fuse the inputs too
-     *  when that beats buying them - what "include multi-step routes" adds
-     *  on top of the one-hop line above. {@code via} is already resolved by
-     *  the caller, which also needs it to arm the open-route hotkey. */
+     *  when that comes out cheaper than buying them. {@code via} is already
+     *  resolved by the caller, which also needs it to arm the open-route
+     *  hotkey. */
     private static Component multiStepLine(FusionData data, RouteSolver.Costs routeCosts, int via) {
         var route = RouteSolver.explain(data, routeCosts, via);
         double cost = RouteSolver.routeCost(data, routeCosts, route);
