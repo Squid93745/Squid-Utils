@@ -5,7 +5,8 @@
   "client": [
     "SoundEngineMixin",
     "AbstractSoundInstanceAccessor",
-    "GuiMixin"
+    "GuiMixin",
+    "ActionBarPacketMixin"
   ],
   "injectors": {
     "defaultRequire": 1
