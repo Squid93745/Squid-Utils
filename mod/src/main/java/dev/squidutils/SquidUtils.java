@@ -40,6 +40,13 @@ public class SquidUtils implements ClientModInitializer {
         return TRACKER;
     }
 
+    // Toggled by /squid debug sound - see SoundEngineMixin.
+    private static volatile boolean logSounds;
+
+    public static boolean logSounds() {
+        return logSounds;
+    }
+
     public static SquidUtilsConfig config() {
         return config == null ? null : config.getInstance();
     }
@@ -235,6 +242,16 @@ public class SquidUtils implements ClientModInitializer {
                                                         .executes(c -> {
                                                             TRACKER.captured().clear();
                                                             say("captured lines cleared");
+                                                            return 1;
+                                                        }))
+                                                .then(net.fabricmc.fabric.api.client.command.v2
+                                                        .ClientCommands.literal("sound")
+                                                        .executes(c -> {
+                                                            logSounds = !logSounds;
+                                                            say("sound logging "
+                                                                    + (logSounds
+                                                                    ? "on - every sound played is logged"
+                                                                    : "off"));
                                                             return 1;
                                                         }))
                                                 .executes(c -> {
