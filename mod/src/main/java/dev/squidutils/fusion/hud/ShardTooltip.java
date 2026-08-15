@@ -67,14 +67,26 @@ public final class ShardTooltip {
         if (cfg.fusion.tooltips.tooltipMultiStep) {
             var routeCosts = engine.routeCosts();
             int via = routeCosts == null ? RouteSolver.BUY : routeCosts.via()[idx];
-            if (via == RouteSolver.BUY) return;
+            if (via == RouteSolver.BUY) {
+                lines.add(noRouteLine("Cheapest route: "));
+                return;
+            }
             hoveredRootRecipe = via;
             hoveredAtMillis = System.currentTimeMillis();
             lines.add(multiStepLine(data, routeCosts, via));
         } else {
-            Component line = directLine(data, engine.directCosts(), idx);
-            if (line != null) lines.add(line);
+            lines.add(directLine(data, engine.directCosts(), idx));
         }
+    }
+
+    /** Every shard gets a line, even when no priced route is available right
+     *  now (a stale or missing bazaar quote somewhere in its recipe tree,
+     *  which {@code CLAUDE.md} already documents as routine) - matching the
+     *  house rule that a missing number says so rather than just vanishing,
+     *  the same as a table row falling back to "?" instead of an empty cell. */
+    private static Component noRouteLine(String label) {
+        return Component.literal(label).withStyle(ChatFormatting.LIGHT_PURPLE)
+                .append(Component.literal("— (no priced route right now)").withStyle(ChatFormatting.GRAY));
     }
 
     /** The root recipe of whatever multi-step route a tooltip showed within
@@ -87,9 +99,9 @@ public final class ShardTooltip {
     /** One hop: the cheapest recipe buying both inputs straight off the
      *  bazaar, exactly as {@link RouteSolver#directCheapest} finds it. */
     private static Component directLine(FusionData data, RouteSolver.Costs direct, int shardIndex) {
-        if (direct == null) return null;
+        if (direct == null) return noRouteLine("Cheapest fusion: ");
         int recipe = direct.via()[shardIndex];
-        if (recipe == RouteSolver.BUY) return null;
+        if (recipe == RouteSolver.BUY) return noRouteLine("Cheapest fusion: ");
 
         return Component.literal("Cheapest fusion: ").withStyle(ChatFormatting.LIGHT_PURPLE)
                 .append(fuseText(data, recipe))
