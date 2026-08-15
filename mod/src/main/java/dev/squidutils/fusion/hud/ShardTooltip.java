@@ -2,6 +2,7 @@ package dev.squidutils.fusion.hud;
 
 import dev.squidutils.SquidUtils;
 import dev.squidutils.fusion.data.FusionData;
+import dev.squidutils.fusion.data.NpcPrices;
 import dev.squidutils.fusion.engine.RouteSolver;
 import dev.squidutils.hud.Draw;
 import net.minecraft.ChatFormatting;
@@ -64,19 +65,58 @@ public final class ShardTooltip {
         }
         if (idx < 0) return;
 
-        if (cfg.fusion.tooltips.tooltipMultiStep) {
-            var routeCosts = engine.routeCosts();
-            int via = routeCosts == null ? RouteSolver.BUY : routeCosts.via()[idx];
-            if (via == RouteSolver.BUY) {
-                lines.add(noRouteLine("Cheapest route: "));
-                return;
-            }
-            hoveredRootRecipe = via;
-            hoveredAtMillis = System.currentTimeMillis();
-            lines.add(multiStepLine(data, routeCosts, via));
-        } else {
-            lines.add(directLine(data, engine.directCosts(), idx));
+        double cheapestKnown = cfg.fusion.tooltips.tooltipMultiStep
+                ? addMultiStepLine(data, engine.routeCosts(), idx, lines)
+                : addDirectLine(data, engine.directCosts(), idx, lines);
+
+        var npc = NpcPrices.of(data.shard(idx).name());
+        if (npc != null && npc.coins() < cheapestKnown) {
+            lines.add(Component.literal("Cheaper from NPC: ").withStyle(ChatFormatting.LIGHT_PURPLE)
+                    .append(Component.literal(npc.npc() + ": ").withStyle(ChatFormatting.WHITE))
+                    .append(Component.literal(Draw.coins(npc.coins())).withStyle(ChatFormatting.GOLD)));
         }
+    }
+
+    /** Adds the one-hop tooltip line and returns the per-unit cost it is
+     *  based on, or +infinity when {@link #directLine} fell back to "no
+     *  data" - {@link RouteSolver#directCheapest} only ever compares fusion
+     *  recipes against each other, never against the shard's own buy price,
+     *  so a BUY result there really does mean nothing priced was found. */
+    private static double addDirectLine(FusionData data, RouteSolver.Costs direct, int shardIndex,
+                                        List<Component> lines) {
+        lines.add(directLine(data, direct, shardIndex));
+        if (direct == null || direct.via()[shardIndex] == RouteSolver.BUY) return Double.POSITIVE_INFINITY;
+        return direct.cost()[shardIndex];
+    }
+
+    /** Adds the multi-step tooltip line and returns the per-unit cost it is
+     *  based on. Unlike {@link #addDirectLine}, {@link RouteSolver#solve}
+     *  does compare every fusion against the shard's own buy price, so a BUY
+     *  result here usually means "buying already beats every route" - a
+     *  real, common answer worth its own line, not the same "no data"
+     *  fallback {@link #addDirectLine} uses when it truly has nothing. */
+    private static double addMultiStepLine(FusionData data, RouteSolver.Costs routeCosts, int idx,
+                                           List<Component> lines) {
+        if (routeCosts == null) {
+            lines.add(noRouteLine("Cheapest route: "));
+            return Double.POSITIVE_INFINITY;
+        }
+        int via = routeCosts.via()[idx];
+        double perUnit = routeCosts.cost()[idx];
+        if (via == RouteSolver.BUY) {
+            if (!Double.isFinite(perUnit)) {
+                lines.add(noRouteLine("Cheapest route: "));
+                return Double.POSITIVE_INFINITY;
+            }
+            lines.add(Component.literal("Cheapest: ").withStyle(ChatFormatting.LIGHT_PURPLE)
+                    .append(Component.literal("buy directly").withStyle(ChatFormatting.WHITE))
+                    .append(Component.literal(" (" + Draw.coins(perUnit) + ")").withStyle(ChatFormatting.GOLD)));
+            return perUnit;
+        }
+        hoveredRootRecipe = via;
+        hoveredAtMillis = System.currentTimeMillis();
+        lines.add(multiStepLine(data, routeCosts, via));
+        return perUnit;
     }
 
     /** Every shard gets a line, even when no priced route is available right
