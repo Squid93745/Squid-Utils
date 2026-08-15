@@ -314,6 +314,7 @@ public class SquidUtils implements ClientModInitializer {
                 config.openConfigGui();
             }
             dev.squidutils.fusion.WisdomDetector.tick(client);
+            TRACKER.tick();
         });
 
         // The configurable "open route hotkey": not a registered KeyMapping,

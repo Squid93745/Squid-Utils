@@ -134,6 +134,9 @@ public final class SessionTracker {
     private long shardsSold;
     private long fuses;
     private long shardsFused;   // shards produced, which is not one per fusion
+    // True once any part of xpGained this session came from creditEstimatedXp
+    // rather than a real HUNTING_XP match - see that method's doc.
+    private boolean xpEstimated;
 
     // Lifetime totals - persisted, never cleared by reset(). See the class doc
     // for how priorElapsedSeconds combines with the live session clock.
@@ -145,6 +148,10 @@ public final class SessionTracker {
     private long totalFuses;
     private long totalShardsFused;
     private long priorElapsedSeconds;
+    // Sticky once true: a lifetime total that ever included one estimated
+    // fusion stays an estimate-tainted figure forever, unlike the session
+    // flag above which a fresh reset() genuinely clears.
+    private boolean totalXpEstimated;
 
     /** Session vs Total - HUD view state only, not persisted. */
     private boolean viewingTotal;
@@ -160,12 +167,23 @@ public final class SessionTracker {
     // never catch it as a repeat, double-counting the same gain.
     private String lastHuntingActionBar = "";
 
-    // Whichever of FUSION or HUNTING_XP arrives first, briefly, waiting for
-    // the other - see reverseEngineerWisdom(). Only one of the two pending
-    // slots is ever occupied at a time in practice, since a match on either
-    // side immediately tries to pair and clear.
-    private String pendingFusionRarity;
-    private long pendingFusionAtMillis;
+    /** One fusion still waiting on its real {@link #HUNTING_XP} line. */
+    private record PendingFusion(String rarity, long atMillis) {}
+
+    // Every fusion whose real HUNTING_XP line has not shown up yet, oldest
+    // first - a queue, not a single slot, because fusing several times
+    // within one PAIR_WINDOW_MILLIS is completely normal and a single slot
+    // just overwrote the earlier ones, silently dropping their XP entirely.
+    // Each entry leaves the queue exactly once, either paired with a real
+    // HUNTING_XP line (below) or resolved to an estimate once its own
+    // window expires (see tick()).
+    private final java.util.ArrayDeque<PendingFusion> pendingFusions = new java.util.ArrayDeque<>();
+    // The reverse case - real XP arrived with no fusion (yet) to pair it
+    // with - stays a single slot: unlike a fusion, an unpaired HUNTING_XP
+    // line is not itself missing anything if it is never paired, since it
+    // already unconditionally credited xpGained the moment it matched. This
+    // only ever feeds reverseEngineerWisdom, so losing a stale one to a
+    // rare back-to-back case costs nothing but Wisdom's accuracy.
     private double pendingHuntingXp = -1;
     private long pendingHuntingXpAtMillis;
     private static final long PAIR_WINDOW_MILLIS = 2000;
@@ -237,7 +255,13 @@ public final class SessionTracker {
         pausedAt = paused ? System.currentTimeMillis() : 0;
         coinsSpent = coinsGained = xpGained = 0;
         shardsBought = shardsSold = fuses = shardsFused = 0;
+        xpEstimated = false;
         captured.clear();
+        // A fusion still queued here already had fuses/shardsFused folded
+        // into the totals just cleared above - crediting its XP after this
+        // point would land in the new session with no fuse to match it.
+        pendingFusions.clear();
+        pendingHuntingXp = -1;
         save();
     }
 
@@ -276,6 +300,7 @@ public final class SessionTracker {
     public double coinsGained() { return coinsGained; }
     public double profit() { return coinsGained - coinsSpent; }
     public double xpGained() { return xpGained; }
+    public boolean xpEstimated() { return xpEstimated; }
     public long shardsBought() { return shardsBought; }
     public long shardsSold() { return shardsSold; }
     public long fuses() { return fuses; }
@@ -285,6 +310,7 @@ public final class SessionTracker {
     public double totalCoinsGained() { return totalCoinsGained; }
     public double totalProfit() { return totalCoinsGained - totalCoinsSpent; }
     public double totalXpGained() { return totalXpGained; }
+    public boolean totalXpEstimated() { return totalXpEstimated; }
     public long totalShardsBought() { return totalShardsBought; }
     public long totalShardsSold() { return totalShardsSold; }
     public long totalFuses() { return totalFuses; }
@@ -340,9 +366,10 @@ public final class SessionTracker {
                 totalXpGained += gained;
 
                 long now = System.currentTimeMillis();
-                if (pendingFusionRarity != null && now - pendingFusionAtMillis <= PAIR_WINDOW_MILLIS) {
-                    reverseEngineerWisdom(pendingFusionRarity, gained);
-                    pendingFusionRarity = null;
+                PendingFusion oldest = pendingFusions.peekFirst();
+                if (oldest != null && now - oldest.atMillis() <= PAIR_WINDOW_MILLIS) {
+                    pendingFusions.pollFirst();
+                    reverseEngineerWisdom(oldest.rarity(), gained);
                 } else {
                     pendingHuntingXp = gained;
                     pendingHuntingXpAtMillis = now;
@@ -433,8 +460,7 @@ public final class SessionTracker {
                     reverseEngineerWisdom(rarity, pendingHuntingXp);
                     pendingHuntingXp = -1;
                 } else {
-                    pendingFusionRarity = rarity;
-                    pendingFusionAtMillis = now;
+                    pendingFusions.addLast(new PendingFusion(rarity, now));
                 }
             }
             save();
@@ -442,6 +468,54 @@ public final class SessionTracker {
         }
 
         capture(text);
+    }
+
+    /**
+     * Called once a client tick from {@code SquidUtils}. Drains every fusion
+     * that has been waiting for its real {@link #HUNTING_XP} line longer
+     * than {@link #PAIR_WINDOW_MILLIS} - which, on some modpacks, is
+     * forever, for reasons still being tracked down - falling back to
+     * {@link #creditEstimatedXp} for each rather than leaving it stuck
+     * uncounted.
+     *
+     * <p>A loop, not a single check: {@link #pendingFusions} is oldest-first,
+     * so several fusions queued up in a burst each cross their own two-second
+     * mark in turn as time passes, and every one of them needs resolving
+     * here, not just the first.
+     */
+    public void tick() {
+        long now = System.currentTimeMillis();
+        PendingFusion oldest;
+        while ((oldest = pendingFusions.peekFirst()) != null
+                && now - oldest.atMillis() > PAIR_WINDOW_MILLIS) {
+            pendingFusions.pollFirst();
+            creditEstimatedXp(oldest.rarity());
+        }
+    }
+
+    /**
+     * Credits XP for a fusion whose real {@link #HUNTING_XP} line never
+     * showed up, using the same {@code base * (1 + wisdom / 100)} formula
+     * {@link #reverseEngineerWisdom} runs in reverse - {@code wisdom} here
+     * comes from whatever {@link WisdomDetector} (or an earlier real
+     * fusion's {@link #reverseEngineerWisdom} call) last read, not a fresh
+     * measurement, so this is an assumption stacked on an assumption. Flags
+     * {@link #xpEstimated} so the HUD can say so rather than presenting it
+     * as a real number - see the house style note on that in CLAUDE.md.
+     */
+    private void creditEstimatedXp(String rarity) {
+        double base = dev.squidutils.fusion.engine.Scorer.huntingXp(rarity);
+        if (base <= 0) return;
+        var cfg = SquidUtils.config();
+        float wisdom = cfg != null ? cfg.fusion.general.huntingWisdom : 0f;
+        double estimate = base * (1 + wisdom / 100.0);
+
+        start();
+        xpGained += estimate;
+        totalXpGained += estimate;
+        xpEstimated = true;
+        totalXpEstimated = true;
+        save();
     }
 
     /**
@@ -577,6 +651,7 @@ public final class SessionTracker {
         long totalFuses;
         long totalShardsFused;
         long priorElapsedSeconds;
+        boolean totalXpEstimated;
     }
 
     private void load() {
@@ -592,6 +667,7 @@ public final class SessionTracker {
             totalFuses = d.totalFuses;
             totalShardsFused = d.totalShardsFused;
             priorElapsedSeconds = d.priorElapsedSeconds;
+            totalXpEstimated = d.totalXpEstimated;
         } catch (Exception e) {
             SquidUtils.LOG.warn("[squidutils] could not read tracker-stats.json", e);
         }
@@ -610,6 +686,7 @@ public final class SessionTracker {
         d.totalShardsSold = totalShardsSold;
         d.totalFuses = totalFuses;
         d.totalShardsFused = totalShardsFused;
+        d.totalXpEstimated = totalXpEstimated;
         // Not written back into the in-memory field - see the class doc.
         // Only ever recomputed fresh for the file, so a later event this same
         // run does not double-count today's elapsed time on top of itself.

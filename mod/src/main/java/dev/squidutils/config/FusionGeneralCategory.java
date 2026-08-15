@@ -2,7 +2,6 @@ package dev.squidutils.config;
 
 import com.google.gson.annotations.Expose;
 import io.github.notenoughupdates.moulconfig.annotations.ConfigEditorBoolean;
-import io.github.notenoughupdates.moulconfig.annotations.ConfigEditorSlider;
 import io.github.notenoughupdates.moulconfig.annotations.ConfigOption;
 import io.github.notenoughupdates.moulconfig.annotations.SearchTag;
 
@@ -52,16 +51,22 @@ public class FusionGeneralCategory {
     @Expose
     @ConfigOption(name = "Read wisdom automatically",
             desc = "Pick up Hunting Wisdom from the SkyBlock stats menu whenever "
-                    + "you open it. Turn off to set it by hand below.")
+                    + "you open it, and refine it further from every fusion's "
+                    + "actual XP gain. Off freezes it at its last detected value.")
     @ConfigEditorBoolean
     @SearchTag("wisdom auto detect automatic stats read player")
     public boolean autoDetectWisdom = true;
 
+    /**
+     * Fusion XP scales as {@code base x (1 + wisdom / 100)}. No longer a
+     * config editor field - it was a manual slider before auto-detection
+     * existed, and a value the player can accidentally overwrite defeats
+     * the point of detecting it automatically. {@link
+     * dev.squidutils.fusion.WisdomDetector} and {@link
+     * dev.squidutils.fusion.SessionTracker#reverseEngineerWisdom} both write
+     * this field directly, and it is still {@code @Expose}d so its detected
+     * value survives a restart.
+     */
     @Expose
-    @ConfigOption(name = "Hunting Wisdom",
-            desc = "Fusion XP scales as base x (1 + wisdom/100). Filled in "
-                    + "automatically from the stats menu unless that is off.")
-    @ConfigEditorSlider(minValue = 0, maxValue = 400, minStep = 0.5f)
-    @SearchTag("wisdom hunting xp experience bonus stat multiplier")
     public float huntingWisdom = 41.5f;
 }

@@ -323,7 +323,11 @@ public final class FusionWidgets {
                     profitV >= 0 ? Draw.C_PROFIT : 0xFFFF6666));
         }
         if (cfg.fusion.tracker.trackerXp) {
-            lines.add(new Cell("Hunting XP: " + Draw.units(xpV)
+            // "~" marks a figure that includes at least one fusion whose real
+            // XP line never arrived and was estimated from Hunting Wisdom
+            // instead - see SessionTracker.creditEstimatedXp.
+            boolean estimated = totalView ? t.totalXpEstimated() : t.xpEstimated();
+            lines.add(new Cell("Hunting XP: " + (estimated ? "~" : "") + Draw.units(xpV)
                     + " (" + Draw.units(t.perHour(xpV, elapsedV)) + "/h)", Draw.C_XP));
         }
         if (cfg.fusion.tracker.trackerShards) {
