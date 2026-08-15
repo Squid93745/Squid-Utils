@@ -325,6 +325,12 @@ public final class SessionTracker {
             Matcher hm = HUNTING_XP.matcher(text);
             if (hm.find() && !hm.group(0).equals(lastHuntingActionBar)) {
                 lastHuntingActionBar = hm.group(0);
+                // Logged unconditionally, not just on the unmatched path
+                // capture() covers - this is the one place a *successful*
+                // match's exact raw text was never actually visible before,
+                // only inferred from the counter moving.
+                SquidUtils.LOG.info("[squidutils] hunting xp matched: \"{}\" -> {}",
+                        hm.group(0), hm.group(1));
                 // Hunting XP has no source but fusing, so this alone is
                 // proof one just happened - arms the clock the same as the
                 // FUSION chat line does, in case the two arrive out of order.

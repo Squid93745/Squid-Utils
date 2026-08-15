@@ -6,7 +6,8 @@
     "SoundEngineMixin",
     "AbstractSoundInstanceAccessor",
     "GuiMixin",
-    "ActionBarPacketMixin"
+    "ActionBarPacketMixin",
+    "ExperiencePacketMixin"
   ],
   "injectors": {
     "defaultRequire": 1

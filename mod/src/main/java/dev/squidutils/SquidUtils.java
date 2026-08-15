@@ -47,6 +47,17 @@ public class SquidUtils implements ClientModInitializer {
         return logSounds;
     }
 
+    // Toggled by /squid debug exp - see ExperiencePacketMixin. Separate
+    // diagnostic from the chat/action-bar hooks: this is the raw vanilla
+    // XP bar packet, which carries no text at all, so a mod repurposing it
+    // for skill display would be completely invisible to every other hook
+    // this project has - worth ruling in or out on its own.
+    private static volatile boolean logExp;
+
+    public static boolean logExp() {
+        return logExp;
+    }
+
     public static SquidUtilsConfig config() {
         return config == null ? null : config.getInstance();
     }
@@ -263,6 +274,16 @@ public class SquidUtils implements ClientModInitializer {
                                                         .ClientCommands.literal("tablist")
                                                         .executes(c -> {
                                                             dumpTabList();
+                                                            return 1;
+                                                        }))
+                                                .then(net.fabricmc.fabric.api.client.command.v2
+                                                        .ClientCommands.literal("exp")
+                                                        .executes(c -> {
+                                                            logExp = !logExp;
+                                                            say("experience packet logging "
+                                                                    + (logExp
+                                                                    ? "on - every XP bar update is logged"
+                                                                    : "off"));
                                                             return 1;
                                                         }))
                                                 .executes(c -> {
