@@ -259,6 +259,12 @@ public class SquidUtils implements ClientModInitializer {
                                                                     : "off"));
                                                             return 1;
                                                         }))
+                                                .then(net.fabricmc.fabric.api.client.command.v2
+                                                        .ClientCommands.literal("tablist")
+                                                        .executes(c -> {
+                                                            dumpTabList();
+                                                            return 1;
+                                                        }))
                                                 .executes(c -> {
                                                     TRACKER.dumpCaptured();
                                                     return 1;
@@ -368,6 +374,32 @@ public class SquidUtils implements ClientModInitializer {
             player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
                     "§d[Squid Utils] §7" + message));
         }
+    }
+
+    /**
+     * One-shot diagnostic for /squid debug tablist: dumps every tab list
+     * entry's display text to the log.
+     *
+     * <p>Unlike chat and the action bar, tab list content is not something
+     * the game logs anywhere on its own - live client state read on demand
+     * is the only way to see it, hence a direct dump instead of a passive
+     * capture like {@code SessionTracker}'s. Prompted by Hunting XP not
+     * showing up on the action bar at all in a live capture, despite that
+     * being how another skill-tracking mod (SkyHanni) reads every other
+     * SkyBlock skill - it also falls back to the tab list for exactly this
+     * kind of case, which is the lead this follows.
+     */
+    private static void dumpTabList() {
+        var mc = net.minecraft.client.Minecraft.getInstance();
+        if (mc.player == null || mc.player.connection == null) return;
+        var entries = mc.player.connection.getListedOnlinePlayers();
+        LOG.info("[squidutils] tab list: {} entries", entries.size());
+        for (var info : entries) {
+            var display = info.getTabListDisplayName();
+            String text = display != null ? display.getString() : "(no tab name)";
+            LOG.info("[squidutils] tab: {}", text);
+        }
+        say("dumped " + entries.size() + " tab list entries to the log");
     }
 
     private static Set<String> lower(Set<String> in) {
