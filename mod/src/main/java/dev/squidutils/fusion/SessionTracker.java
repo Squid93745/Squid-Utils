@@ -87,6 +87,24 @@ public final class SessionTracker {
     private static final Pattern FUSION = Pattern.compile(
             "FUSION!\\s*You obtained\\s+(?:an?\\s+)?(.+?)(?:\\s*x\\s*(\\d+))?!");
 
+    /**
+     * The live Hunting skill XP gain, shown on the action bar - confirmed
+     * from SkyHanni's own skill tracker (a mod this same player already
+     * runs), which reads every SkyBlock skill this same way, Hunting
+     * included: {@code +207.2 Hunting (5,183,244/0)}. Some skills show a
+     * percentage instead of a raw fraction, so the parenthesised part is
+     * matched loosely - only the number right after {@code +} matters here.
+     *
+     * <p>Reading this directly replaces computing XP from rarity + Hunting
+     * Wisdom entirely: Wisdom is easy to have stale (see {@link
+     * WisdomDetector}, which only refreshes it once the right menu is
+     * opened), and this is the exact number Hypixel granted, not a
+     * recomputation of it that inherits whatever the stored Wisdom happens
+     * to be at the time.
+     */
+    private static final Pattern HUNTING_XP = Pattern.compile(
+            "\\+([\\d.,]+)\\s+Hunting\\s*\\([^)]*\\)");
+
     /** Lines worth capturing when nothing matched, for pattern refinement. */
     private static final Pattern INTERESTING = Pattern.compile(
             "(?i)bazaar|hunting|fusion|fuse|claim|sold|sell|bought|buy|order|coins|xp");
@@ -135,6 +153,12 @@ public final class SessionTracker {
 
     private final Set<String> captured = new LinkedHashSet<>();
     private String lastOverlay = "";
+    // Deduplicated separately from lastOverlay: the action bar can pack
+    // several stats into one line ("+50 Bits  +207.2 Hunting (...)"), and if
+    // some other part of that line keeps changing frame to frame while the
+    // Hunting portion does not, lastOverlay's whole-line comparison would
+    // never catch it as a repeat, double-counting the same gain.
+    private String lastHuntingActionBar = "";
 
     public SessionTracker() {
         Path dir = null;
@@ -155,11 +179,6 @@ public final class SessionTracker {
         for (var e : nameToRarity.entrySet()) {
             SHARDS.put(normalise(e.getKey()), e.getValue());
         }
-    }
-
-    /** Rarity of a shard by its chat name, or null if unknown. */
-    public static String rarityOf(String itemName) {
-        return itemName == null ? null : SHARDS.get(normalise(itemName));
     }
 
     /**
@@ -281,6 +300,23 @@ public final class SessionTracker {
         if (overlay) {
             if (text.equals(lastOverlay)) return;
             lastOverlay = text;
+
+            // Checked here rather than folded into the pattern chain below:
+            // this is action-bar only (chat never carries skill XP), and does
+            // not return - a line that happens to also carry something else
+            // useful should still fall through to the rest of the checks.
+            Matcher hm = HUNTING_XP.matcher(text);
+            if (hm.find() && !hm.group(0).equals(lastHuntingActionBar)) {
+                lastHuntingActionBar = hm.group(0);
+                // Hunting XP has no source but fusing, so this alone is
+                // proof one just happened - arms the clock the same as the
+                // FUSION chat line does, in case the two arrive out of order.
+                start();
+                double gained = parseDouble(hm.group(1));
+                xpGained += gained;
+                totalXpGained += gained;
+                save();
+            }
         }
 
         Matcher m = BOUGHT.matcher(text);
@@ -353,22 +389,8 @@ public final class SessionTracker {
             totalFuses++;
             totalShardsFused += produced;
             ShoppingList.onFusionCompleted(m.group(1));
-
-            // XP is granted per fusion by the rarity of the result, so the one
-            // message gives both counters. Falls back to nothing rather than a
-            // guess when the shard name is not recognised.
-            String rarity = rarityOf(m.group(1));
-            if (rarity != null) {
-                float wisdom = 0;
-                var cfg = SquidUtils.config();
-                if (cfg != null) wisdom = cfg.fusion.general.huntingWisdom;
-                double xp = dev.squidutils.fusion.engine.Scorer.xpPerFuse(rarity, wisdom);
-                xpGained += xp;
-                totalXpGained += xp;
-            } else {
-                SquidUtils.LOG.info("[squidutils] fusion result not recognised: {}",
-                        m.group(1));
-            }
+            // XP is not computed here - see HUNTING_XP, which reads the real
+            // number Hypixel granted independently of this message.
             save();
             return;
         }
