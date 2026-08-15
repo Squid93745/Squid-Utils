@@ -11,6 +11,7 @@ import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.screens.ChatScreen;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+import net.minecraft.client.gui.screens.inventory.AbstractSignEditScreen;
 import net.minecraft.network.chat.Component;
 
 import java.util.EnumMap;
@@ -52,7 +53,11 @@ public final class FusionHud implements HudElement {
      * <p>Full while browsing a container - the Fusion Box, the bazaar, an NPC
      * shop, or your own inventory are all indistinguishable from the client's
      * side, since Hypixel's own menus are just more of the same vanilla
-     * container protocol {@link AbstractContainerScreen} already covers.
+     * container protocol {@link AbstractContainerScreen} already covers - and
+     * also full on the bazaar's own custom-amount sign prompt
+     * ({@link AbstractSignEditScreen}), specifically so the shopping list
+     * panel stays clickable there: clicking its entry a second time while
+     * that sign is open is what fills the number in.
      * Dimmed while chatting, so a glance at prices does not compete for
      * attention with what you are typing - and is not clickable there either,
      * to keep a stray click from landing on a shard name instead of the chat
@@ -62,6 +67,7 @@ public final class FusionHud implements HudElement {
      */
     public static ScreenVisibility visibilityOf(Screen screen) {
         if (screen instanceof AbstractContainerScreen<?>) return ScreenVisibility.FULL;
+        if (screen instanceof AbstractSignEditScreen) return ScreenVisibility.FULL;
         if (screen instanceof ChatScreen) return ScreenVisibility.DIMMED;
         return ScreenVisibility.HIDDEN;
     }

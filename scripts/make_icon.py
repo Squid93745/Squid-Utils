@@ -1,8 +1,8 @@
-"""Draw the Squid Utils mod icon: a colossal squid, 128x128 PNG.
+"""Draw the Squid Utils mod icon: a colossal squid, 256x256 PNG.
 
 No image library available, so this writes the PNG bytes directly and draws by
 evaluating shape coverage per pixel at 4x supersampling, then box-downsampling.
-Slower than a real rasteriser and entirely fast enough for one 128px icon.
+Slower than a real rasteriser and entirely fast enough for one icon.
 
 Colossal squids really are a deep reddish-magenta with famously enormous eyes,
 so the palette leans that way rather than the cartoon-teal a generic squid gets.
@@ -15,7 +15,10 @@ import struct
 import zlib
 from pathlib import Path
 
-SIZE = 128
+SIZE = 256                  # 2x the old 128: the smallest features (each eye
+                             # is only ~14px across at 128) survive whatever
+                             # a mod list or thumbnail shrinks this down to
+                             # much better with more source detail to sample
 SS = 4                      # supersample factor
 W = SIZE * SS
 
@@ -125,20 +128,31 @@ def sample(x, y):
 
 
 def eye(x, y):
-    """The defining feature: proportionally enormous."""
-    for side in (-1, 1):
-        ex, ey = 0.5 + side * 0.082, 0.575
-        d = math.hypot(x - ex, (y - ey) * 1.06)
-        if d < 0.056:
-            if d > 0.047:
-                return EYE_DARK
-            pd = math.hypot(x - ex, (y - ey) * 1.06)
-            if pd < 0.026:
-                return EYE_DARK
-            gx, gy = ex - side * 0.016, ey - 0.018
-            if math.hypot(x - gx, y - gy) < 0.011:
-                return GLINT
-            return EYE_WHITE
+    """The defining feature: proportionally enormous.
+
+    Shape is computed from ax = abs(x - 0.5), folded around the centreline
+    before any eye math runs, rather than mirroring a per-side formula.
+    Two separate floating-point computations that are only *supposed* to be
+    mirror images can drift apart by a pixel at this size (each eye is only
+    ~14px across at 128x128) - one eye rendering visibly squarer than the
+    other was exactly that. Folding first makes the two sides run the
+    identical arithmetic, so the outer ring and pupil are bit-for-bit
+    symmetric; only the glint keeps a per-side offset, deliberately, so the
+    highlight still looks like it is catching light from one direction.
+    """
+    ax = abs(x - 0.5)
+    d = math.hypot(ax - 0.082, (y - 0.575) * 1.06)
+    if d < 0.056:
+        if d > 0.047:
+            return EYE_DARK
+        if d < 0.026:
+            return EYE_DARK
+        side = -1 if x < 0.5 else 1
+        gx = 0.5 + side * 0.082 - side * 0.016
+        gy = 0.575 - 0.018
+        if math.hypot(x - gx, y - gy) < 0.011:
+            return GLINT
+        return EYE_WHITE
     return None
 
 

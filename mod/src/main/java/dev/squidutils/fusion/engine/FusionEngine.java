@@ -53,6 +53,7 @@ public final class FusionEngine {
 
     private volatile Brain brain;
     private volatile RouteSolver.Costs routeCosts;
+    private volatile RouteSolver.Costs directCosts;
     private volatile List<Scorer.Opportunity> current = List.of();
     private volatile List<Scorer.Opportunity> byCoins = List.of();
     private volatile List<Scorer.Opportunity> byXp = List.of();
@@ -112,13 +113,18 @@ public final class FusionEngine {
             var all = Scorer.evaluate(data, bazaar.products(), brain, cfg, hour);
             int n = Math.max(1, topN.get());
 
-            // Cheapest buy-or-fuse route per shard, for multi-step table rows.
-            // Same cost per rescore as one more Scorer.evaluate() pass; cheap
-            // next to the order-book work evaluate() already does per recipe.
+            // Cheapest buy-or-fuse route per shard, for multi-step table rows
+            // and the "include multi-step routes" tooltip line. Same cost per
+            // rescore as one more Scorer.evaluate() pass; cheap next to the
+            // order-book work evaluate() already does per recipe.
             Brain brainNow = brain;
-            routeCosts = RouteSolver.solve(data, i -> Scorer.unitBuyCost(
+            java.util.function.IntToDoubleFunction unitBuyCost = i -> Scorer.unitBuyCost(
                     bazaar.products().get(data.shard(i).tag()), cfg,
-                    brainNow.reference(data.shard(i).tag())));
+                    brainNow.reference(data.shard(i).tag()));
+            routeCosts = RouteSolver.solve(data, unitBuyCost);
+            // The plain "cheapest fusion" tooltip line, before that toggle -
+            // one honest hop, not the recursively-optimal chain above.
+            directCosts = RouteSolver.directCheapest(data, unitBuyCost);
 
             // Three independent views over one evaluation. Scoring 135k recipes
             // three times would be wasteful; re-sorting the result is trivial.
@@ -262,5 +268,6 @@ public final class FusionEngine {
     public Brain brain() { return brain; }
     public FusionData data() { return data; }
     public RouteSolver.Costs routeCosts() { return routeCosts; }
+    public RouteSolver.Costs directCosts() { return directCosts; }
     public int pricedProducts() { return bazaar.products().size(); }
 }

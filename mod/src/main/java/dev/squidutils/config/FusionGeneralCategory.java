@@ -31,6 +31,15 @@ public class FusionGeneralCategory {
     public boolean compact = false;
 
     @Expose
+    @ConfigOption(name = "Show shopping list",
+            desc = "Draw the accumulated shopping list panel, moveable in the "
+                    + "overlay editor like every other panel. Add to it from a "
+                    + "route screen's \"Add to shopping list\" button.")
+    @ConfigEditorBoolean
+    @SearchTag("shopping list visitor panel show")
+    public boolean shoppingListShow = false;
+
+    @Expose
     @ConfigOption(name = "Read wisdom automatically",
             desc = "Pick up Hunting Wisdom from the SkyBlock stats menu whenever "
                     + "you open it. Turn off to set it by hand below.")

@@ -3,11 +3,13 @@ package dev.squidutils.fusion.hud;
 import dev.squidutils.config.FusionCategory;
 import dev.squidutils.config.SquidUtilsConfig;
 import dev.squidutils.config.WidgetPos;
+import dev.squidutils.fusion.data.FusionData;
 import dev.squidutils.fusion.engine.FusionEngine;
 import dev.squidutils.fusion.engine.Recommender;
 import dev.squidutils.fusion.engine.RouteSolver;
 import dev.squidutils.fusion.engine.Scorer;
 import dev.squidutils.hud.Draw;
+import dev.squidutils.hud.ShoppingList;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 
@@ -28,12 +30,15 @@ import java.util.List;
  */
 public final class FusionWidgets {
 
-    /** Three tables each owning three graphs, plus the session tracker. */
+    /** Three tables each owning three graphs, the session tracker, and the
+     *  shopping list - the last two share the "not a table" sentinel, so
+     *  telling them apart is by identity, not by field. */
     public enum Which {
         REC_TABLE(0, -1), REC_G1(0, 0), REC_G2(0, 1), REC_G3(0, 2),
         COIN_TABLE(1, -1), COIN_G1(1, 0), COIN_G2(1, 1), COIN_G3(1, 2),
         XP_TABLE(2, -1), XP_G1(2, 0), XP_G2(2, 1), XP_G3(2, 2),
-        TRACKER(-1, -1);
+        TRACKER(-1, -1),
+        SHOPPING_LIST(-1, -1);
 
         public final int table;
         public final int graph;
@@ -44,7 +49,8 @@ public final class FusionWidgets {
         }
 
         public boolean isGraph() { return graph >= 0; }
-        public boolean isTracker() { return table < 0; }
+        public boolean isTracker() { return this == TRACKER; }
+        public boolean isShoppingList() { return this == SHOPPING_LIST; }
     }
 
     private static final int ICON = 9;
@@ -56,8 +62,14 @@ public final class FusionWidgets {
      *
      * <p>Collected while drawing so clicks and hovers can be resolved without
      * recomputing the layout. Rebuilt every frame; the panels move and resize.
+     *
+     * <p>{@code units}/{@code shardIndex} are only meaningful for a shopping
+     * list row (-1 otherwise): a plain shard-name click elsewhere just opens
+     * the bazaar, but a shopping list row also arms the sign fill and can be
+     * right-clicked to remove, both of which need to know which shard and how
+     * many - see the click handling in {@code SquidUtils}.
      */
-    public record Hit(int x, int y, int w, int h, String shard) {
+    public record Hit(int x, int y, int w, int h, String shard, int units, int shardIndex) {
         public boolean contains(double mx, double my) {
             return mx >= x && mx <= x + w && my >= y && my <= y + h;
         }
@@ -69,6 +81,11 @@ public final class FusionWidgets {
             return mx >= x && mx <= x + w && my >= y && my <= y + h;
         }
     }
+
+    /** {@link RowHit#rootRecipe()} sentinel meaning "open the shopping list's
+     *  aggregated fuse-order screen", not a route to a single recipe -
+     *  reusing the same hit list rather than a second one just for this. */
+    public static final int SHOPPING_ROUTE_HIT = -2;
 
     /** A sortable legend cell, in screen-space pixels. */
     private record HeaderHit(int x, int y, int w, int h, int table, ColKey key) {
@@ -101,8 +118,15 @@ public final class FusionWidgets {
 
     /** The shard name under the cursor, or null. */
     public static String shardAt(double mx, double my) {
+        Hit h = hitAt(mx, my);
+        return h == null ? null : h.shard();
+    }
+
+    /** The full hit under the cursor, or null - used where the caller needs
+     *  more than just the name, e.g. the shopping list's units/shardIndex. */
+    public static Hit hitAt(double mx, double my) {
         for (int i = HITS.size() - 1; i >= 0; i--) {
-            if (HITS.get(i).contains(mx, my)) return HITS.get(i).shard();
+            if (HITS.get(i).contains(mx, my)) return HITS.get(i);
         }
         return null;
     }
@@ -155,6 +179,7 @@ public final class FusionWidgets {
     public static WidgetPos pos(SquidUtilsConfig cfg, Which which) {
         cfg.general.normalise();
         if (which.isTracker()) return cfg.general.trackerPos;
+        if (which.isShoppingList()) return cfg.general.shoppingListPos;
         return which.isGraph()
                 ? cfg.general.graphPos[which.table][which.graph]
                 : cfg.general.tablePos[which.table];
@@ -164,6 +189,7 @@ public final class FusionWidgets {
 
     public static String title(Which which) {
         if (which.isTracker()) return "Session tracker";
+        if (which.isShoppingList()) return "Shopping list";
         return which.isGraph()
                 ? TABLE_NAME[which.table] + " · " + METRIC_NAME[which.graph]
                 : TABLE_NAME[which.table];
@@ -178,6 +204,11 @@ public final class FusionWidgets {
      */
     public static boolean enabled(SquidUtilsConfig cfg, Which which) {
         if (which.isTracker()) return cfg.fusion.tracker.trackerShow;
+        // Gated purely by the toggle, same as every other panel - not by
+        // whether the list currently has anything in it. Hiding an empty
+        // panel would also hide it from the overlay editor, and then there
+        // would be no way to position it before you have added anything.
+        if (which.isShoppingList()) return cfg.fusion.general.shoppingListShow;
         if (!cfg.fusion.tableShown(which.table)) return false;   // graphs follow their table
         return !which.isGraph() || cfg.fusion.graphOn(which.table, which.graph);
     }
@@ -194,6 +225,7 @@ public final class FusionWidgets {
     public static int[] draw(GuiGraphicsExtractor g, Font font, SquidUtilsConfig cfg,
                              FusionEngine engine, Which which, boolean preview) {
         if (which.isTracker()) return tracker(g, font, cfg);
+        if (which.isShoppingList()) return shoppingList(g, font, engine, pos(cfg, which));
         return which.isGraph()
                 ? graph(g, font, cfg, engine, which, preview)
                 : table(g, font, cfg, engine, which, preview);
@@ -242,6 +274,79 @@ public final class FusionWidgets {
         int y = 4;
         for (Cell c : lines) {
             g.text(font, c.text(), 4, y, c.colour());
+            y += lineH;
+        }
+        end(g);
+        return new int[]{width + 8, height};
+    }
+
+    /**
+     * The accumulated shopping list, styled like SkyHanni's visitor shopping
+     * list - a small always-there panel rather than a screen you navigate to,
+     * so it stays visible (and moveable, through the same overlay editor
+     * every other panel uses) even while the bazaar's own sign prompt is open.
+     *
+     * <p>Left-click a row to open its bazaar page and arm the sign fill.
+     * Right-click removes it - see the click handling in {@code SquidUtils}.
+     */
+    private static int[] shoppingList(GuiGraphicsExtractor g, Font font, FusionEngine engine, WidgetPos p) {
+        var entries = ShoppingList.entries();
+        FusionData data = engine.data();
+        var costs = engine.routeCosts();
+        int lineH = font.lineHeight + 1;
+
+        List<String> lineTexts = new ArrayList<>(entries.size());
+        double total = 0;
+        for (var e : entries) {
+            var s = data.shard(e.shardIndex());
+            double cost = costs != null ? costs.cost()[e.shardIndex()] * e.units() : 0;
+            total += cost;
+            lineTexts.add(s.name() + " x" + e.units() + "  (" + Draw.coins(cost) + ")");
+        }
+        String title = entries.isEmpty() ? "Shopping list" : "Shopping list  (" + Draw.coins(total) + ")";
+        boolean hasSteps = ShoppingList.hasSteps();
+        String routeLink = "▸ View fuse order (" + ShoppingList.steps().size() + " steps)";
+
+        int width = font.width(title);
+        for (String line : lineTexts) width = Math.max(width, ICON + 6 + font.width(line));
+        String empty = "empty - \"Add to shopping list\" on a route screen";
+        if (entries.isEmpty()) width = Math.max(width, font.width(empty));
+        if (hasSteps) width = Math.max(width, font.width(routeLink));
+
+        int height = lineH * (1 + Math.max(1, entries.size()) + (hasSteps ? 1 : 0)) + 8;
+        begin(g, p);
+        Draw.panel(g, width + 8, height, 0xC0FF9E5E);
+
+        int y = 4;
+        g.text(font, title, 4, y, Draw.TITLE);
+        y += lineH + 2;
+
+        if (entries.isEmpty()) {
+            g.text(font, empty, 4, y, Draw.DIM);
+        } else {
+            for (int i = 0; i < entries.size(); i++) {
+                var e = entries.get(i);
+                var s = data.shard(e.shardIndex());
+                drawIcon(g, font, 4, y - 1, ICON, s);
+                g.text(font, lineTexts.get(i), 4 + ICON + 6, y, 0xFF7FD4FF);
+                HITS.add(new Hit(
+                        p.x + Math.round(4 * p.scale),
+                        p.y + Math.round((y - 1) * p.scale),
+                        Math.round((ICON + 6 + font.width(lineTexts.get(i))) * p.scale),
+                        Math.round((font.lineHeight + 2) * p.scale),
+                        s.name(), e.units(), e.shardIndex()));
+                y += lineH;
+            }
+        }
+
+        if (hasSteps) {
+            g.text(font, routeLink, 4, y, 0xFFB86BFF);
+            ROW_HITS.add(new RowHit(
+                    p.x + Math.round(4 * p.scale),
+                    p.y + Math.round((y - 1) * p.scale),
+                    Math.round(font.width(routeLink) * p.scale),
+                    Math.round((font.lineHeight + 2) * p.scale),
+                    SHOPPING_ROUTE_HIT));
             y += lineH;
         }
         end(g);
@@ -542,7 +647,7 @@ public final class FusionWidgets {
                 p.y + Math.round(y * p.scale),
                 Math.round(w * p.scale),
                 Math.round(font.lineHeight * p.scale),
-                shard));
+                shard, -1, -1));
         return x + w;
     }
 
@@ -657,7 +762,17 @@ public final class FusionWidgets {
     // ------------------------------------------------------------------
     private static void drawIcon(GuiGraphicsExtractor g, Font font,
                                  int x, int y, int size, Scorer.Opportunity o) {
-        int idx = ShardIcons.indexOf(o.resultTag());
+        drawIcon(g, font, x, y, size, o.resultTag(), o.rarity(), o.resultName());
+    }
+
+    private static void drawIcon(GuiGraphicsExtractor g, Font font,
+                                 int x, int y, int size, FusionData.Shard s) {
+        drawIcon(g, font, x, y, size, s.tag(), s.rarity(), s.name());
+    }
+
+    private static void drawIcon(GuiGraphicsExtractor g, Font font, int x, int y, int size,
+                                 String tag, String rarity, String name) {
+        int idx = ShardIcons.indexOf(tag);
         if (idx >= 0) {
             g.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED,
                     ShardIcons.atlas(), x, y,
@@ -667,10 +782,9 @@ public final class FusionWidgets {
                     ShardIcons.atlasWidth(), ShardIcons.atlasHeight());
             return;
         }
-        int fill = Draw.rarity(o.rarity());
+        int fill = Draw.rarity(rarity);
         g.fill(x, y, x + size, y + size, fill);
         g.outline(x, y, size, size, 0x80000000);   // (x, y, width, height)
-        String name = o.resultName();
         if (name != null && !name.isEmpty()) {
             String ch = name.substring(0, 1).toUpperCase(java.util.Locale.ROOT);
             boolean lightBg = fill == 0xFFFFFFFF || fill == 0xFFFFAA00 || fill == 0xFF55FF55;

@@ -70,6 +70,41 @@ public final class RouteSolver {
         return new Costs(cost, via);
     }
 
+    /**
+     * The cheapest single recipe for each shard, buying both inputs straight
+     * off the bazaar - no recursive fusing of the inputs, unlike {@link
+     * #solve}. This is what the "cheapest fusion" tooltip line means before
+     * the "include multi-step routes" toggle is also on: one honest hop, not
+     * the full recursively-optimal chain.
+     */
+    public static Costs directCheapest(FusionData data, IntToDoubleFunction unitBuyCost) {
+        int n = data.shardCount();
+        double[] buyCost = new double[n];
+        for (int i = 0; i < n; i++) {
+            double c = unitBuyCost.applyAsDouble(i);
+            buyCost[i] = c > 0 ? c : Double.POSITIVE_INFINITY;
+        }
+
+        double[] bestCost = new double[n];
+        int[] bestRecipe = new int[n];
+        java.util.Arrays.fill(bestCost, Double.POSITIVE_INFINITY);
+        java.util.Arrays.fill(bestRecipe, BUY);
+
+        for (int r = 0; r < data.recipeCount(); r++) {
+            int ai = data.inputA(r), bi = data.inputB(r), ri = data.result(r);
+            double ca = buyCost[ai], cb = buyCost[bi];
+            if (Double.isInfinite(ca) || Double.isInfinite(cb)) continue;
+
+            double unit = (ca * data.shard(ai).fuseAmount() + cb * data.shard(bi).fuseAmount())
+                    / data.qty(r);
+            if (unit < bestCost[ri]) {
+                bestCost[ri] = unit;
+                bestRecipe[ri] = r;
+            }
+        }
+        return new Costs(bestCost, bestRecipe);
+    }
+
     // ------------------------------------------------------------------
 
     /** One fusion to perform, and how many times. */

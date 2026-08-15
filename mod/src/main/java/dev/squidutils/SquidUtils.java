@@ -119,6 +119,12 @@ public class SquidUtils implements ClientModInitializer {
         HudElementRegistry.addLast(
                 Identifier.fromNamespaceAndPath(MOD_ID, "panel"), hud);
 
+        // The "cheapest fusion" line on a shard's own bazaar tooltip - a
+        // completely different mechanism from the panel-hover tooltip above,
+        // fired whenever the game renders a tooltip for an actual item.
+        net.fabricmc.fabric.api.client.item.v1.ItemTooltipCallback.EVENT
+                .register(dev.squidutils.fusion.hud.ShardTooltip::append);
+
         // Draw the overlays from the screen's background stage while a menu is
         // open. The HUD layer renders above screens, so panels drawn there sit
         // on top of the Fusion Box; hooking the background puts them under it.
@@ -135,22 +141,22 @@ public class SquidUtils implements ClientModInitializer {
                             .register((s, gfx, mx, my, tick) -> hud.drawUnderScreen(gfx, mx, my));
 
                     // Clicking a legend header sorts by it, a multi-step row
-                    // opens its route, and a shard name opens its bazaar page -
-                    // checked in that order since only the last needs nothing
-                    // more than the click itself. Returning false swallows the
-                    // click so it does not also land on whatever menu slot
-                    // happens to be underneath.
+                    // opens its route, and a shard name opens its bazaar page
+                    // (a shopping list row also arms the sign fill, and can be
+                    // right-clicked to remove instead) - checked in that order
+                    // since only the last needs nothing more than the click
+                    // itself. Returning false swallows the click so it does not
+                    // also land on whatever menu slot happens to be underneath.
                     net.fabricmc.fabric.api.client.screen.v1.ScreenMouseEvents
                             .allowMouseClick(screen)
                             .register((s, event) -> {
                                 var cfg = config();
                                 if (cfg == null || cfg.general.hideInMenus
                                         || !cfg.general.showHud) return true;
-                                // Only a container screen gets full interaction -
-                                // the Fusion Box, the bazaar, an NPC shop, your
-                                // own inventory. Everything else (pause, Options,
-                                // chat, the title screen, ...) passes the click
-                                // through untouched.
+                                // Only a container screen (or the bazaar's own
+                                // sign prompt) gets full interaction. Everything
+                                // else (pause, Options, chat, the title screen,
+                                // ...) passes the click through untouched.
                                 if (dev.squidutils.fusion.hud.FusionHud.visibilityOf(s)
                                         != dev.squidutils.fusion.hud.FusionHud.ScreenVisibility.FULL) {
                                     return true;
@@ -159,15 +165,27 @@ public class SquidUtils implements ClientModInitializer {
                                         .handleHeaderClick(event.x(), event.y())) return false;
                                 int route = dev.squidutils.fusion.hud.FusionWidgets
                                         .multiStepRowAt(event.x(), event.y());
+                                if (route == dev.squidutils.fusion.hud.FusionWidgets.SHOPPING_ROUTE_HIT) {
+                                    net.minecraft.client.Minecraft.getInstance().setScreen(
+                                            new dev.squidutils.hud.ShoppingRouteScreen(s));
+                                    return false;
+                                }
                                 if (route >= 0) {
                                     net.minecraft.client.Minecraft.getInstance().setScreen(
                                             new dev.squidutils.hud.MultiStepScreen(s, route));
                                     return false;
                                 }
-                                String shard = dev.squidutils.fusion.hud.FusionWidgets
-                                        .shardAt(event.x(), event.y());
-                                if (shard == null) return true;
-                                openBazaar(shard);
+                                var hit = dev.squidutils.fusion.hud.FusionWidgets
+                                        .hitAt(event.x(), event.y());
+                                if (hit == null) return true;
+                                if (event.button() == 1 && hit.shardIndex() >= 0) {
+                                    dev.squidutils.hud.ShoppingList.remove(hit.shardIndex());
+                                    return false;
+                                }
+                                if (hit.units() > 0) {
+                                    dev.squidutils.hud.SignFill.remember(hit.shard(), hit.units());
+                                }
+                                openBazaar(hit.shard());
                                 return false;
                             });
                 });
@@ -252,6 +270,28 @@ public class SquidUtils implements ClientModInitializer {
                 config.openConfigGui();
             }
             dev.squidutils.fusion.WisdomDetector.tick(client);
+        });
+
+        // The configurable "open route hotkey": not a registered KeyMapping,
+        // since MoulConfig's own keybind editor just stores a raw GLFW code
+        // that can change at runtime, so it is polled directly instead. Only
+        // acts on a fresh press (edge-detected against the previous tick) and
+        // only while a shard's multi-step route was shown in a tooltip within
+        // the last moment - see ShardTooltip.currentHoverRoute().
+        boolean[] hotkeyWasDown = {false};
+        ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            var cfg = config();
+            if (cfg == null) return;
+            int key = cfg.fusion.tooltips.openRouteKey;
+            boolean down = key != GLFW.GLFW_KEY_UNKNOWN
+                    && com.mojang.blaze3d.platform.InputConstants.isKeyDown(client.getWindow(), key);
+            if (down && !hotkeyWasDown[0]) {
+                int route = dev.squidutils.fusion.hud.ShardTooltip.currentHoverRoute();
+                if (route >= 0) {
+                    client.setScreen(new dev.squidutils.hud.MultiStepScreen(client.screen, route));
+                }
+            }
+            hotkeyWasDown[0] = down;
         });
 
         LOG.info("[squidutils] ready - press \\ for settings");
