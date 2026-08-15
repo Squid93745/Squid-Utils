@@ -40,6 +40,16 @@ public class FusionGeneralCategory {
     public boolean shoppingListShow = false;
 
     @Expose
+    @ConfigOption(name = "Show fuse order",
+            desc = "Draw a panel listing every fusion step queued up in the "
+                    + "shopping list, dependency-ordered. Stays visible under the "
+                    + "Fusion Box like every other panel, so you can read it while "
+                    + "actually working through the fusions.")
+    @ConfigEditorBoolean
+    @SearchTag("fuse order shopping list panel show fusion box")
+    public boolean fuseOrderShow = false;
+
+    @Expose
     @ConfigOption(name = "Read wisdom automatically",
             desc = "Pick up Hunting Wisdom from the SkyBlock stats menu whenever "
                     + "you open it. Turn off to set it by hand below.")

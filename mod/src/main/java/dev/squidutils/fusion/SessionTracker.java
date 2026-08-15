@@ -48,9 +48,17 @@ public final class SessionTracker {
      * off the action bar never worked, and would have been fragile anyway -
      * the bar repeats and rounds. The result shard's rarity gives the base XP
      * exactly, so one reliable message replaces two unreliable ones.
+     *
+     * <p>The {@code x<count>} suffix is optional: a fusion that yields a
+     * single shard drops it entirely rather than writing {@code x1}, the same
+     * way Hypixel's own item-lore convention omits a count of one. Requiring
+     * it unconditionally meant every one-output fusion (a large share of the
+     * recipe list - "5x A + 5x B -> 1x C" is at least as common as "-> 2x C")
+     * silently fell through to the unparsed-line capture instead of counting
+     * at all, which is why both counters undercounted so heavily.
      */
     private static final Pattern FUSION = Pattern.compile(
-            "FUSION!\\s*You obtained\\s+(.+?)\\s*x\\s*(\\d+)");
+            "FUSION!\\s*You obtained\\s+(.+?)(?:\\s*x\\s*(\\d+))?!");
 
     /** Lines worth capturing when nothing matched, for pattern refinement. */
     private static final Pattern INTERESTING = Pattern.compile(
@@ -217,7 +225,7 @@ public final class SessionTracker {
         m = FUSION.matcher(text);
         if (m.find()) {
             fuses++;
-            shardsFused += parseLong(m.group(2));
+            shardsFused += m.group(2) != null ? parseLong(m.group(2)) : 1;
 
             // XP is granted per fusion by the rarity of the result, so the one
             // message gives both counters. Falls back to nothing rather than a

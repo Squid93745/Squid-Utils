@@ -165,11 +165,6 @@ public class SquidUtils implements ClientModInitializer {
                                         .handleHeaderClick(event.x(), event.y())) return false;
                                 int route = dev.squidutils.fusion.hud.FusionWidgets
                                         .multiStepRowAt(event.x(), event.y());
-                                if (route == dev.squidutils.fusion.hud.FusionWidgets.SHOPPING_ROUTE_HIT) {
-                                    net.minecraft.client.Minecraft.getInstance().setScreen(
-                                            new dev.squidutils.hud.ShoppingRouteScreen(s));
-                                    return false;
-                                }
                                 if (route >= 0) {
                                     net.minecraft.client.Minecraft.getInstance().setScreen(
                                             new dev.squidutils.hud.MultiStepScreen(s, route));

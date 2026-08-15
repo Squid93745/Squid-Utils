@@ -44,6 +44,7 @@ public class GeneralCategory {
     // with different dimensions.
     @Expose public WidgetPos trackerPos = new WidgetPos(8, 420, 1.0f);
     @Expose public WidgetPos shoppingListPos = new WidgetPos(250, 420, 1.0f);
+    @Expose public WidgetPos fuseOrderPos = new WidgetPos(430, 420, 1.0f);
     @Expose public WidgetPos[] tablePos = defaultTables();
     @Expose public WidgetPos[][] graphPos = defaultGraphs();
 

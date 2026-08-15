@@ -30,15 +30,17 @@ import java.util.List;
  */
 public final class FusionWidgets {
 
-    /** Three tables each owning three graphs, the session tracker, and the
-     *  shopping list - the last two share the "not a table" sentinel, so
-     *  telling them apart is by identity, not by field. */
+    /** Three tables each owning three graphs, the session tracker, the
+     *  shopping list, and its fuse-order breakdown - the last three share the
+     *  "not a table" sentinel, so telling them apart is by identity, not by
+     *  field. */
     public enum Which {
         REC_TABLE(0, -1), REC_G1(0, 0), REC_G2(0, 1), REC_G3(0, 2),
         COIN_TABLE(1, -1), COIN_G1(1, 0), COIN_G2(1, 1), COIN_G3(1, 2),
         XP_TABLE(2, -1), XP_G1(2, 0), XP_G2(2, 1), XP_G3(2, 2),
         TRACKER(-1, -1),
-        SHOPPING_LIST(-1, -1);
+        SHOPPING_LIST(-1, -1),
+        FUSE_ORDER(-1, -1);
 
         public final int table;
         public final int graph;
@@ -51,6 +53,7 @@ public final class FusionWidgets {
         public boolean isGraph() { return graph >= 0; }
         public boolean isTracker() { return this == TRACKER; }
         public boolean isShoppingList() { return this == SHOPPING_LIST; }
+        public boolean isFuseOrder() { return this == FUSE_ORDER; }
     }
 
     private static final int ICON = 9;
@@ -81,11 +84,6 @@ public final class FusionWidgets {
             return mx >= x && mx <= x + w && my >= y && my <= y + h;
         }
     }
-
-    /** {@link RowHit#rootRecipe()} sentinel meaning "open the shopping list's
-     *  aggregated fuse-order screen", not a route to a single recipe -
-     *  reusing the same hit list rather than a second one just for this. */
-    public static final int SHOPPING_ROUTE_HIT = -2;
 
     /** A sortable legend cell, in screen-space pixels. */
     private record HeaderHit(int x, int y, int w, int h, int table, ColKey key) {
@@ -180,6 +178,7 @@ public final class FusionWidgets {
         cfg.general.normalise();
         if (which.isTracker()) return cfg.general.trackerPos;
         if (which.isShoppingList()) return cfg.general.shoppingListPos;
+        if (which.isFuseOrder()) return cfg.general.fuseOrderPos;
         return which.isGraph()
                 ? cfg.general.graphPos[which.table][which.graph]
                 : cfg.general.tablePos[which.table];
@@ -190,6 +189,7 @@ public final class FusionWidgets {
     public static String title(Which which) {
         if (which.isTracker()) return "Session tracker";
         if (which.isShoppingList()) return "Shopping list";
+        if (which.isFuseOrder()) return "Fuse order";
         return which.isGraph()
                 ? TABLE_NAME[which.table] + " · " + METRIC_NAME[which.graph]
                 : TABLE_NAME[which.table];
@@ -209,6 +209,7 @@ public final class FusionWidgets {
         // panel would also hide it from the overlay editor, and then there
         // would be no way to position it before you have added anything.
         if (which.isShoppingList()) return cfg.fusion.general.shoppingListShow;
+        if (which.isFuseOrder()) return cfg.fusion.general.fuseOrderShow;
         if (!cfg.fusion.tableShown(which.table)) return false;   // graphs follow their table
         return !which.isGraph() || cfg.fusion.graphOn(which.table, which.graph);
     }
@@ -226,6 +227,7 @@ public final class FusionWidgets {
                              FusionEngine engine, Which which, boolean preview) {
         if (which.isTracker()) return tracker(g, font, cfg);
         if (which.isShoppingList()) return shoppingList(g, font, engine, pos(cfg, which));
+        if (which.isFuseOrder()) return fuseOrder(g, font, engine, pos(cfg, which));
         return which.isGraph()
                 ? graph(g, font, cfg, engine, which, preview)
                 : table(g, font, cfg, engine, which, preview);
@@ -304,16 +306,13 @@ public final class FusionWidgets {
             lineTexts.add(s.name() + " x" + e.units() + "  (" + Draw.coins(cost) + ")");
         }
         String title = entries.isEmpty() ? "Shopping list" : "Shopping list  (" + Draw.coins(total) + ")";
-        boolean hasSteps = ShoppingList.hasSteps();
-        String routeLink = "▸ View fuse order (" + ShoppingList.steps().size() + " steps)";
 
         int width = font.width(title);
         for (String line : lineTexts) width = Math.max(width, ICON + 6 + font.width(line));
         String empty = "empty - \"Add to shopping list\" on a route screen";
         if (entries.isEmpty()) width = Math.max(width, font.width(empty));
-        if (hasSteps) width = Math.max(width, font.width(routeLink));
 
-        int height = lineH * (1 + Math.max(1, entries.size()) + (hasSteps ? 1 : 0)) + 8;
+        int height = lineH * (1 + Math.max(1, entries.size())) + 8;
         begin(g, p);
         Draw.panel(g, width + 8, height, 0xC0FF9E5E);
 
@@ -338,19 +337,91 @@ public final class FusionWidgets {
                 y += lineH;
             }
         }
+        end(g);
+        return new int[]{width + 8, height};
+    }
 
-        if (hasSteps) {
-            g.text(font, routeLink, 4, y, 0xFFB86BFF);
-            ROW_HITS.add(new RowHit(
-                    p.x + Math.round(4 * p.scale),
-                    p.y + Math.round((y - 1) * p.scale),
-                    Math.round(font.width(routeLink) * p.scale),
-                    Math.round((font.lineHeight + 2) * p.scale),
-                    SHOPPING_ROUTE_HIT));
-            y += lineH;
+    /**
+     * Every fusion step queued across the whole shopping list, dependency-
+     * ordered, styled like a route screen's own "Fuse, in order" section but
+     * drawn under the current screen rather than replacing it - this is the
+     * one place you actually want it next to the Fusion Box itself, so you
+     * can read the next step while working through the menu, not navigate
+     * away from it to see the list.
+     */
+    private static int[] fuseOrder(GuiGraphicsExtractor g, Font font, FusionEngine engine, WidgetPos p) {
+        var steps = ShoppingList.steps();
+        FusionData data = engine.data();
+        int lineH = font.lineHeight + 1;
+
+        String title = "Fuse order";
+        String empty = "empty - fusion steps appear once a route with steps is added";
+
+        int width = font.width(title);
+        for (var step : steps) {
+            width = Math.max(width, fuseOrderLineWidth(font, data, step));
+        }
+        if (steps.isEmpty()) width = Math.max(width, font.width(empty));
+
+        int height = lineH * (1 + Math.max(1, steps.size())) + 8;
+        begin(g, p);
+        Draw.panel(g, width + 8, height, 0xC0B86BFF);
+
+        int y = 4;
+        g.text(font, title, 4, y, Draw.TITLE);
+        y += lineH + 2;
+
+        if (steps.isEmpty()) {
+            g.text(font, empty, 4, y, Draw.DIM);
+        } else {
+            for (var step : steps) {
+                drawFuseOrderRow(g, font, data, step, 4, y, p);
+                y += lineH;
+            }
         }
         end(g);
         return new int[]{width + 8, height};
+    }
+
+    private static int fuseOrderLineWidth(Font font, FusionData data, ShoppingList.StepEntry step) {
+        int r = step.recipeIndex();
+        var sa = data.shard(data.inputA(r));
+        var sb = data.shard(data.inputB(r));
+        var sr = data.shard(data.result(r));
+        boolean same = data.inputA(r) == data.inputB(r);
+        String prefix = step.crafts() > 1 ? step.crafts() + "×  " : "";
+        String line = same
+                ? (sa.fuseAmount() + sb.fuseAmount()) + "x " + sa.name()
+                : sa.fuseAmount() + "x " + sa.name() + " + " + sb.fuseAmount() + "x " + sb.name();
+        return font.width(prefix + line + " → " + data.qty(r) + "x " + sr.name());
+    }
+
+    /** One fuse-order row: crafts-count prefix, then a fusion label with each
+     *  shard name clickable for the bazaar - same building blocks {@link
+     *  #drawLabel} uses for a plain table row. */
+    private static void drawFuseOrderRow(GuiGraphicsExtractor g, Font font, FusionData data,
+                                         ShoppingList.StepEntry step, int x, int y, WidgetPos p) {
+        int r = step.recipeIndex();
+        var sa = data.shard(data.inputA(r));
+        var sb = data.shard(data.inputB(r));
+        var sr = data.shard(data.result(r));
+        boolean same = data.inputA(r) == data.inputB(r);
+
+        int cx = x;
+        if (step.crafts() > 1) {
+            cx = plain(g, font, cx, y, step.crafts() + "×  ");
+        }
+        if (same) {
+            cx = plain(g, font, cx, y, (sa.fuseAmount() + sb.fuseAmount()) + "x ");
+            cx = name(g, font, cx, y, sa.name(), p);
+        } else {
+            cx = plain(g, font, cx, y, sa.fuseAmount() + "x ");
+            cx = name(g, font, cx, y, sa.name(), p);
+            cx = plain(g, font, cx, y, " + " + sb.fuseAmount() + "x ");
+            cx = name(g, font, cx, y, sb.name(), p);
+        }
+        cx = plain(g, font, cx, y, " → " + data.qty(r) + "x ");
+        name(g, font, cx, y, sr.name(), p);
     }
 
     private static String formatElapsed(long secs) {
