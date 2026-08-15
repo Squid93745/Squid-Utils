@@ -4,7 +4,8 @@
   "package": "dev.squidutils.mixin",
   "client": [
     "SoundEngineMixin",
-    "AbstractSoundInstanceAccessor"
+    "AbstractSoundInstanceAccessor",
+    "GuiMixin"
   ],
   "injectors": {
     "defaultRequire": 1
