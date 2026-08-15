@@ -68,12 +68,11 @@ public final class SessionTracker {
      * §8x2§7!} (multi-output, no article) - also seen with a trailing streak
      * counter on repeated identical fusions, {@code §8(§7x§r2§8)} and so on,
      * which the optional count group harmlessly leaves unconsumed rather than
-     * misreading as an output quantity. This is the whole answer for both
-     * fuses and XP: the result shard's rarity gives the base XP exactly, so
-     * one reliable message covers both counters - an earlier attempt at a
-     * separate "+N Hunting XP" broadcast was based on wiki text that turned
-     * out to describe something other than a chat/action-bar message; a live
-     * capture around an actual fusion showed nothing resembling it nearby.
+     * misreading as an output quantity. Drives {@code fuses}, {@code
+     * shardsFused} and the shopping list's completion tracking - not XP, see
+     * {@link #HUNTING_XP} for that, though this result's rarity is still
+     * useful paired with that real number - see {@link
+     * #reverseEngineerWisdom}.
      *
      * <p>{@code §} formatting is baked directly into Hypixel's own message
      * text rather than carried as separate style data, so this can assume
@@ -160,6 +159,16 @@ public final class SessionTracker {
     // never catch it as a repeat, double-counting the same gain.
     private String lastHuntingActionBar = "";
 
+    // Whichever of FUSION or HUNTING_XP arrives first, briefly, waiting for
+    // the other - see reverseEngineerWisdom(). Only one of the two pending
+    // slots is ever occupied at a time in practice, since a match on either
+    // side immediately tries to pair and clear.
+    private String pendingFusionRarity;
+    private long pendingFusionAtMillis;
+    private double pendingHuntingXp = -1;
+    private long pendingHuntingXpAtMillis;
+    private static final long PAIR_WINDOW_MILLIS = 2000;
+
     public SessionTracker() {
         Path dir = null;
         try {
@@ -179,6 +188,13 @@ public final class SessionTracker {
         for (var e : nameToRarity.entrySet()) {
             SHARDS.put(normalise(e.getKey()), e.getValue());
         }
+    }
+
+    /** Rarity of a shard by its chat name, or null if unknown - the shape
+     *  {@link #reverseEngineerWisdom} needs to turn a fusion result into a
+     *  base XP value via {@link dev.squidutils.fusion.engine.Scorer#huntingXp}. */
+    public static String rarityOf(String itemName) {
+        return itemName == null ? null : SHARDS.get(normalise(itemName));
     }
 
     /**
@@ -315,6 +331,15 @@ public final class SessionTracker {
                 double gained = parseDouble(hm.group(1));
                 xpGained += gained;
                 totalXpGained += gained;
+
+                long now = System.currentTimeMillis();
+                if (pendingFusionRarity != null && now - pendingFusionAtMillis <= PAIR_WINDOW_MILLIS) {
+                    reverseEngineerWisdom(pendingFusionRarity, gained);
+                    pendingFusionRarity = null;
+                } else {
+                    pendingHuntingXp = gained;
+                    pendingHuntingXpAtMillis = now;
+                }
                 save();
             }
         }
@@ -389,8 +414,22 @@ public final class SessionTracker {
             totalFuses++;
             totalShardsFused += produced;
             ShoppingList.onFusionCompleted(m.group(1));
-            // XP is not computed here - see HUNTING_XP, which reads the real
-            // number Hypixel granted independently of this message.
+            // XP is not counted here - see HUNTING_XP, which reads the real
+            // number Hypixel granted independently of this message. This
+            // result's rarity is still useful on its own, though: paired
+            // with that real number, it is enough to back out the current
+            // Hunting Wisdom - see reverseEngineerWisdom().
+            String rarity = rarityOf(m.group(1));
+            if (rarity != null) {
+                long now = System.currentTimeMillis();
+                if (pendingHuntingXp >= 0 && now - pendingHuntingXpAtMillis <= PAIR_WINDOW_MILLIS) {
+                    reverseEngineerWisdom(rarity, pendingHuntingXp);
+                    pendingHuntingXp = -1;
+                } else {
+                    pendingFusionRarity = rarity;
+                    pendingFusionAtMillis = now;
+                }
+            }
             save();
             return;
         }
@@ -453,6 +492,60 @@ public final class SessionTracker {
         int i = 1;
         for (String s : captured) {
             player.sendSystemMessage(Component.literal("§e" + (i++) + ". §f" + s));
+        }
+    }
+
+    /**
+     * Back out the current Hunting Wisdom from one real fusion: knowing the
+     * result's rarity gives the base XP ({@link
+     * dev.squidutils.fusion.engine.Scorer#huntingXp}), and {@link
+     * #HUNTING_XP} just gave the true amount actually granted, so {@code
+     * gained = base * (1 + wisdom / 100)} has exactly one unknown left.
+     *
+     * <p>This is a second, independent way of keeping {@code
+     * huntingWisdom} current alongside {@link WisdomDetector} - that one
+     * needs the right SkyBlock menu open at some point in the session; this
+     * one needs nothing but a single fusion, which is the whole reason to
+     * have this mod open in the first place. Both write the same config
+     * field, so every fusion self-corrects it a little further regardless
+     * of which one last touched it.
+     *
+     * <p>Writes straight into the live config rather than keeping its own
+     * copy, so the ranking engine's XP-per-fuse and XP-per-1,000-coins
+     * figures - the XP table, its graphs, and the tooltip's cheapest-route
+     * line - all pick up the correction on their very next refresh with no
+     * further wiring needed.
+     */
+    private void reverseEngineerWisdom(String rarity, double gainedXp) {
+        var cfg = SquidUtils.config();
+        if (cfg == null || !cfg.fusion.general.autoDetectWisdom) return;
+
+        double base = dev.squidutils.fusion.engine.Scorer.huntingXp(rarity);
+        if (base <= 0) return;
+
+        double wisdom = (gainedXp / base - 1.0) * 100.0;
+        // A little slack for the action bar's own rounding rather than a
+        // hard floor at zero - a small negative reading is measurement
+        // noise, not evidence Wisdom actually went negative (impossible).
+        // Anything further out than that is more likely a bad pairing (the
+        // wrong rarity matched to this XP amount) than real Wisdom, so it
+        // is discarded rather than stored.
+        if (wisdom < -5 || wisdom > 10_000) return;
+        wisdom = Math.max(0, wisdom);
+
+        float current = cfg.fusion.general.huntingWisdom;
+        if (Math.abs(current - wisdom) < 0.05) return;   // already correct
+
+        cfg.fusion.general.huntingWisdom = (float) wisdom;
+        var managed = SquidUtils.managedConfig();
+        if (managed != null) managed.saveToFile();
+
+        var player = Minecraft.getInstance().player;
+        if (player != null) {
+            player.sendSystemMessage(Component.literal(
+                    "§d[Squid Utils] §7Hunting Wisdom recalculated as §b"
+                            + String.format(Locale.ROOT, "%.1f", wisdom)
+                            + " §7from that last fusion; XP figures now match your stats."));
         }
     }
 
