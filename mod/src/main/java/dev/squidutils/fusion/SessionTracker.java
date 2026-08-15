@@ -10,6 +10,7 @@ import net.minecraft.network.chat.Component;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.Locale;
 import java.util.Set;
@@ -446,6 +447,9 @@ public final class SessionTracker {
      */
     private void capture(String text) {
         if (captured.size() >= MAX_CAPTURES) return;
+        // This mod's own status lines loop back through onChat too (see the
+        // dumpCaptured() note on sendSystemMessage) - not worth keeping.
+        if (text.startsWith("[Squid Utils]")) return;
         if (!captureAll && !INTERESTING.matcher(text).find()) return;
         String trimmed = text.trim();
         if (trimmed.length() < 4 || !captured.add(trimmed)) return;
@@ -489,8 +493,13 @@ public final class SessionTracker {
         }
         player.sendSystemMessage(Component.literal(
                 "§d[Squid Utils] §7" + captured.size() + " unmatched line(s):"));
+        // Snapshot rather than iterating captured directly: sendSystemMessage
+        // below loops straight back through this same mod's own chat hook,
+        // and if a printed line does not itself match anything, capture()
+        // adds it right back to the live set mid-iteration - a real crash
+        // (ConcurrentModificationException), confirmed from a live capture.
         int i = 1;
-        for (String s : captured) {
+        for (String s : new ArrayList<>(captured)) {
             player.sendSystemMessage(Component.literal("§e" + (i++) + ". §f" + s));
         }
     }
