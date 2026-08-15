@@ -214,6 +214,24 @@ public final class FusionWidgets {
         return !which.isGraph() || cfg.fusion.graphOn(which.table, which.graph);
     }
 
+    /**
+     * Whether this panel currently has anything worth drawing on the real
+     * HUD - separate from {@link #enabled}, which reflects only the settings
+     * toggle and stays that way deliberately, since the overlay editor uses
+     * it too and an empty panel still needs to be positionable there before
+     * anything has been added to it.
+     *
+     * <p>Only the shopping list and fuse order panels can be empty in a way
+     * worth hiding for outside the editor; every other panel already draws
+     * its own inline empty state ("collecting history...", and so on)
+     * instead of disappearing.
+     */
+    public static boolean hasContent(Which which) {
+        if (which.isShoppingList()) return !ShoppingList.isEmpty();
+        if (which.isFuseOrder()) return ShoppingList.hasSteps();
+        return true;
+    }
+
     /** The table a graph belongs to, for the connector line. */
     public static Which tableOf(Which graph) {
         return switch (graph.table) {

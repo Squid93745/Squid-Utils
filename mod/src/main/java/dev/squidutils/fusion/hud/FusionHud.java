@@ -140,7 +140,7 @@ public final class FusionHud implements HudElement {
 
         FusionWidgets.clearHits();
         for (FusionWidgets.Which which : FusionWidgets.Which.values()) {
-            if (!FusionWidgets.enabled(cfg, which)) {
+            if (!FusionWidgets.enabled(cfg, which) || !FusionWidgets.hasContent(which)) {
                 bounds.remove(which);
                 continue;
             }
