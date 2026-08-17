@@ -1,3 +1,5 @@
+CLAUDE.md
+
 __pycache__/
 *.py[cod]
 data/*.db
