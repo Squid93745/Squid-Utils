@@ -3,6 +3,8 @@ package dev.squidutils.fusion.hud;
 import dev.squidutils.config.FusionCategory;
 import dev.squidutils.config.SquidUtilsConfig;
 import dev.squidutils.config.WidgetPos;
+import dev.squidutils.fusion.data.BazaarClient;
+import dev.squidutils.fusion.data.Brain;
 import dev.squidutils.fusion.data.FusionData;
 import dev.squidutils.fusion.engine.FusionEngine;
 import dev.squidutils.fusion.engine.Recommender;
@@ -16,6 +18,7 @@ import net.minecraft.client.gui.GuiGraphicsExtractor;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 
 /**
  * The fusion overlays, drawn identically by the HUD and by the placement editor
@@ -30,14 +33,18 @@ import java.util.List;
  */
 public final class FusionWidgets {
 
-    /** Three tables each owning three graphs, the session tracker, the
-     *  shopping list, and its fuse-order breakdown - the last three share the
-     *  "not a table" sentinel, so telling them apart is by identity, not by
-     *  field. */
+    /** Recommended and XP per fuse each own three graphs; the four Profit
+     *  Shards tables own none (see {@code FusionTablesCategory.ProfitVariant}).
+     *  Table index 0 Recommended, 1-4 Profit Shards 1-4, 5 XP per fuse - the
+     *  session tracker, shopping list and fuse-order breakdown share the "not
+     *  a table" sentinel, so telling them apart is by identity, not field. */
     public enum Which {
         REC_TABLE(0, -1), REC_G1(0, 0), REC_G2(0, 1), REC_G3(0, 2),
-        COIN_TABLE(1, -1), COIN_G1(1, 0), COIN_G2(1, 1), COIN_G3(1, 2),
-        XP_TABLE(2, -1), XP_G1(2, 0), XP_G2(2, 1), XP_G3(2, 2),
+        PROFIT_TABLE_1(1, -1),
+        PROFIT_TABLE_2(2, -1),
+        PROFIT_TABLE_3(3, -1),
+        PROFIT_TABLE_4(4, -1),
+        XP_TABLE(5, -1), XP_G1(5, 0), XP_G2(5, 1), XP_G3(5, 2),
         TRACKER(-1, -1),
         SHOPPING_LIST(-1, -1),
         FUSE_ORDER(-1, -1);
@@ -114,8 +121,8 @@ public final class FusionWidgets {
      * table's natural (engine-ranked) order, which is the default until a
      * legend cell is clicked.
      */
-    private static final ColKey[] sortColumn = new ColKey[3];
-    private static final boolean[] sortDescending = {true, true, true};
+    private static final ColKey[] sortColumn = new ColKey[6];
+    private static final boolean[] sortDescending = {true, true, true, true, true, true};
 
     /** Called once per frame before drawing; hit regions are per-frame. */
     public static void clearHits() {
@@ -197,7 +204,28 @@ public final class FusionWidgets {
         return false;
     }
 
-    private static final String[] TABLE_NAME = {"Recommended", "Profit Shards", "XP per fuse"};
+    /**
+     * The Profit Shards names carry their own buy/sell mode - the only thing
+     * that tells the four tables apart on screen, since otherwise they would
+     * all just say "Profit Shards".
+     */
+    private static String tableName(SquidUtilsConfig cfg, int t) {
+        var tables = cfg.fusion.tables;
+        return switch (t) {
+            case 1 -> "Profit Shards 1" + tradeSuffix(tables.profit1.buyMode, tables.profit1.sellMode);
+            case 2 -> "Profit Shards 2" + tradeSuffix(tables.profit2.buyMode, tables.profit2.sellMode);
+            case 3 -> "Profit Shards 3" + tradeSuffix(tables.profit3.buyMode, tables.profit3.sellMode);
+            case 4 -> "Profit Shards 4" + tradeSuffix(tables.profit4.buyMode, tables.profit4.sellMode);
+            case 5 -> "XP per fuse";
+            default -> "Recommended";
+        };
+    }
+
+    private static String tradeSuffix(int buyMode, int sellMode) {
+        String buy = buyMode == 0 ? "Instabuy" : "Buy order";
+        String sell = sellMode == 0 ? "Sell offer" : "Instasell";
+        return " (" + buy + " -> " + sell + ")";
+    }
 
     private FusionWidgets() {}
 
@@ -213,13 +241,13 @@ public final class FusionWidgets {
 
     private static final String[] METRIC_NAME = {"profit", "demand", "xp per coin"};
 
-    public static String title(Which which) {
+    public static String title(SquidUtilsConfig cfg, Which which) {
         if (which.isTracker()) return "Session tracker";
         if (which.isShoppingList()) return "Shopping list";
         if (which.isFuseOrder()) return "Fuse order";
         return which.isGraph()
-                ? TABLE_NAME[which.table] + " · " + METRIC_NAME[which.graph]
-                : TABLE_NAME[which.table];
+                ? tableName(cfg, which.table) + " · " + METRIC_NAME[which.graph]
+                : tableName(cfg, which.table);
     }
 
     /**
@@ -259,11 +287,11 @@ public final class FusionWidgets {
         return true;
     }
 
-    /** The table a graph belongs to, for the connector line. */
+    /** The table a graph belongs to, for the connector line. Only Recommended
+     *  and XP per fuse have graphs - the four Profit Shards tables never do. */
     public static Which tableOf(Which graph) {
         return switch (graph.table) {
-            case 1 -> Which.COIN_TABLE;
-            case 2 -> Which.XP_TABLE;
+            case 5 -> Which.XP_TABLE;
             default -> Which.REC_TABLE;
         };
     }
@@ -404,24 +432,71 @@ public final class FusionWidgets {
      * <p>Left-click a row to open its bazaar page and arm the sign fill.
      * Right-click removes it - see the click handling in {@code SquidUtils}.
      */
+    /**
+     * Real order-book sweep cost per line, at the actual queued quantity -
+     * not a per-unit price scaled up, which understates cost the moment a
+     * queued quantity is large enough to walk past the cheapest book levels.
+     * A line the book cannot currently fill shows "?" rather than a wrong
+     * number, and taints the panel total with a trailing "+" so it reads as
+     * a floor, not an exact figure - the same "say so rather than pretend"
+     * rule the rest of the mod follows for an unmeasured number.
+     *
+     * <p>Each line also gets the same "how far can I buy before the book
+     * bites back" check the tables' own batch column runs, via {@link
+     * Scorer#buyDepthLimit} - queuing more than that turns the line a
+     * warning colour and says how much actually stays within tolerance, so a
+     * huge queued quantity that would only fill by paying steadily worse
+     * prices is visible before you go buy it, not after.
+     */
     private static int[] shoppingList(GuiGraphicsExtractor g, Font font, FusionEngine engine, WidgetPos p) {
         var entries = ShoppingList.entries();
         FusionData data = engine.data();
-        var costs = engine.routeCosts();
+        Scorer.Settings cfg = engine.currentSettings();
+        var products = engine.products();
+        var brain = engine.brain();
         int lineH = font.lineHeight + 1;
 
         List<String> lineTexts = new ArrayList<>(entries.size());
+        List<Boolean> overBudget = new ArrayList<>(entries.size());
+        List<Long> safeAmounts = new ArrayList<>(entries.size());
         double total = 0;
+        boolean anyUnknown = false;
         for (var e : entries) {
             var s = data.shard(e.shardIndex());
-            double cost = costs != null ? costs.cost()[e.shardIndex()] * e.units() : 0;
-            total += cost;
-            lineTexts.add(s.name() + " x" + e.units() + "  (" + Draw.coins(cost) + ")");
+            var product = products.get(s.tag());
+            var ref = brain.reference(s.tag());
+            double cost = product != null ? Scorer.totalBuyCost(product, e.units(), cfg, ref) : -1;
+
+            String costText;
+            if (cost >= 0) {
+                total += cost;
+                costText = Draw.coins(cost);
+            } else {
+                anyUnknown = true;
+                costText = "?";
+            }
+
+            // Recomputed fresh every render from engine.products()/
+            // currentSettings(), the same live state the tables' own batch
+            // column reads - so this tracks the engine's own refresh cadence
+            // (Trading > refresh interval, 20s minimum) rather than being
+            // frozen at the moment the line was added to the list.
+            long safe = product != null ? Scorer.buyDepthLimit(product, cfg, ref) : Long.MAX_VALUE;
+            boolean over = e.units() > safe;
+            overBudget.add(over);
+            safeAmounts.add(safe);
+            String line = s.name() + " x" + e.units() + "  (" + costText + ")";
+            if (over) line += " - only " + safe + "x within tolerance";
+            lineTexts.add(line);
         }
-        String title = entries.isEmpty() ? "Shopping list" : "Shopping list  (" + Draw.coins(total) + ")";
+        String title = entries.isEmpty() ? "Shopping list"
+                : "Shopping list  (" + Draw.coins(total) + (anyUnknown ? "+" : "") + ")";
 
         int width = font.width(title);
-        for (String line : lineTexts) width = Math.max(width, ICON + 6 + font.width(line) + DELETE_W);
+        for (int i = 0; i < lineTexts.size(); i++) {
+            int extra = DELETE_W + (overBudget.get(i) ? font.width(BATCH_LABEL) : 0);
+            width = Math.max(width, ICON + 6 + font.width(lineTexts.get(i)) + extra);
+        }
         String empty = "empty - \"Add to shopping list\" on a route screen";
         if (entries.isEmpty()) width = Math.max(width, font.width(empty));
 
@@ -440,7 +515,8 @@ public final class FusionWidgets {
                 var e = entries.get(i);
                 var s = data.shard(e.shardIndex());
                 drawIcon(g, font, 4, y - 1, ICON, s);
-                g.text(font, lineTexts.get(i), 4 + ICON + 6, y, 0xFF7FD4FF);
+                int colour = overBudget.get(i) ? 0xFFFFB020 : 0xFF7FD4FF;
+                g.text(font, lineTexts.get(i), 4 + ICON + 6, y, colour);
                 HITS.add(new Hit(
                         p.x + Math.round(4 * p.scale),
                         p.y + Math.round((y - 1) * p.scale),
@@ -448,13 +524,38 @@ public final class FusionWidgets {
                         Math.round((font.lineHeight + 2) * p.scale),
                         s.name(), e.units(), e.shardIndex()));
                 int shardIndex = e.shardIndex();
-                deleteButton(g, font, 4 + ICON + 6 + font.width(lineTexts.get(i)), y, p,
-                        () -> ShoppingList.remove(shardIndex));
+                int x = 4 + ICON + 6 + font.width(lineTexts.get(i));
+                if (overBudget.get(i)) {
+                    long safe = safeAmounts.get(i);
+                    x = batchButton(g, font, x, y, p, shardIndex, safe);
+                }
+                deleteButton(g, font, x, y, p, () -> ShoppingList.remove(shardIndex));
                 y += lineH;
             }
         }
         end(g);
         return new int[]{width + 8, height};
+    }
+
+    private static final String BATCH_LABEL = " [batch]";
+
+    /** Clamps an over-budget shopping list line down to the safe quantity
+     *  {@link Scorer#buyDepthLimit} allows right now - only drawn once a
+     *  line is already flagged over budget, since there is nothing to clamp
+     *  otherwise. Reads the same live {@code safe} value the line's warning
+     *  text already shows, so the amount it sets tracks the engine's own
+     *  refresh cadence rather than a value frozen at add-time. */
+    private static int batchButton(GuiGraphicsExtractor g, Font font, int x, int y, WidgetPos p,
+                                    int shardIndex, long safe) {
+        g.text(font, BATCH_LABEL, x, y, 0xFFFFB020);
+        int clamped = (int) Math.min(safe, Integer.MAX_VALUE);
+        ACTION_HITS.add(new ActionHit(
+                p.x + Math.round((x + 1) * p.scale),
+                p.y + Math.round((y - 1) * p.scale),
+                Math.round((font.width(BATCH_LABEL) - 1) * p.scale),
+                Math.round((font.lineHeight + 2) * p.scale),
+                () -> ShoppingList.setUnits(shardIndex, clamped)));
+        return x + font.width(BATCH_LABEL);
     }
 
     /**
@@ -468,14 +569,32 @@ public final class FusionWidgets {
     private static int[] fuseOrder(GuiGraphicsExtractor g, Font font, FusionEngine engine, WidgetPos p) {
         var steps = ShoppingList.steps();
         FusionData data = engine.data();
+        Scorer.Settings cfg = engine.currentSettings();
+        var products = engine.products();
+        var brain = engine.brain();
         int lineH = font.lineHeight + 1;
 
-        String title = "Fuse order";
         String empty = "empty - fusion steps appear once a route with steps is added";
 
-        int width = font.width(title);
+        // Real profit per step - an order-book sweep for crafts x that step's
+        // own input/output quantities, not a per-unit price scaled up. Same
+        // "?" and trailing "+" convention the shopping list panel uses for a
+        // line the book cannot currently fill.
+        List<Double> profits = new ArrayList<>(steps.size());
+        double totalProfit = 0;
+        boolean anyUnknown = false;
         for (var step : steps) {
-            width = Math.max(width, fuseOrderLineWidth(font, data, step) + DELETE_W);
+            Double profit = stepProfit(data, products, cfg, brain, step);
+            profits.add(profit);
+            if (profit != null) totalProfit += profit; else anyUnknown = true;
+        }
+        String title = steps.isEmpty() ? "Fuse order"
+                : "Fuse order  (" + (totalProfit >= 0 ? "+" : "") + Draw.coins(totalProfit)
+                        + (anyUnknown ? "+" : "") + ")";
+
+        int width = font.width(title);
+        for (int i = 0; i < steps.size(); i++) {
+            width = Math.max(width, fuseOrderLineWidth(font, data, steps.get(i), profits.get(i)) + DELETE_W);
         }
         if (steps.isEmpty()) width = Math.max(width, font.width(empty));
 
@@ -490,8 +609,8 @@ public final class FusionWidgets {
         if (steps.isEmpty()) {
             g.text(font, empty, 4, y, Draw.DIM);
         } else {
-            for (var step : steps) {
-                drawFuseOrderRow(g, font, data, step, 4, y, p);
+            for (int i = 0; i < steps.size(); i++) {
+                drawFuseOrderRow(g, font, data, steps.get(i), profits.get(i), 4, y, p);
                 y += lineH;
             }
         }
@@ -499,7 +618,51 @@ public final class FusionWidgets {
         return new int[]{width + 8, height};
     }
 
-    private static int fuseOrderLineWidth(Font font, FusionData data, ShoppingList.StepEntry step) {
+    /**
+     * Real profit for {@code crafts} of one queued step - an order-book
+     * sweep at the actual bulk quantity on every leg, the same primitive the
+     * shopping list panel and each table's new "batch" column both use.
+     * Null, not zero, when the book cannot currently fill it, so the caller
+     * can tell "unprofitable" apart from "unknown".
+     */
+    private static Double stepProfit(FusionData data, Map<String, BazaarClient.Product> products,
+                                     Scorer.Settings cfg, Brain brain, ShoppingList.StepEntry step) {
+        int r = step.recipeIndex();
+        var sa = data.shard(data.inputA(r));
+        var sb = data.shard(data.inputB(r));
+        var sr = data.shard(data.result(r));
+        boolean same = data.inputA(r) == data.inputB(r);
+        long crafts = step.crafts();
+
+        var pa = products.get(sa.tag());
+        var pr = products.get(sr.tag());
+        if (pa == null || pr == null) return null;
+
+        double cost;
+        if (same) {
+            long units = crafts * (sa.fuseAmount() + sb.fuseAmount());
+            double c = Scorer.totalBuyCost(pa, units, cfg, brain.reference(sa.tag()));
+            if (c < 0) return null;
+            cost = c;
+        } else {
+            var pb = products.get(sb.tag());
+            if (pb == null) return null;
+            double ca = Scorer.totalBuyCost(pa, crafts * sa.fuseAmount(), cfg, brain.reference(sa.tag()));
+            double cb = Scorer.totalBuyCost(pb, crafts * sb.fuseAmount(), cfg, brain.reference(sb.tag()));
+            if (ca < 0 || cb < 0) return null;
+            cost = ca + cb;
+        }
+
+        double revenue = Scorer.totalSellRevenue(pr, crafts * data.qty(r), cfg, brain.reference(sr.tag()));
+        if (revenue < 0) return null;
+        return revenue - cost;
+    }
+
+    private static String profitText(Double profit) {
+        return profit == null ? "?" : (profit >= 0 ? "+" : "") + Draw.coins(profit);
+    }
+
+    private static int fuseOrderLineWidth(Font font, FusionData data, ShoppingList.StepEntry step, Double profit) {
         int r = step.recipeIndex();
         var sa = data.shard(data.inputA(r));
         var sb = data.shard(data.inputB(r));
@@ -509,14 +672,16 @@ public final class FusionWidgets {
         String line = same
                 ? (sa.fuseAmount() + sb.fuseAmount()) + "x " + sa.name()
                 : sa.fuseAmount() + "x " + sa.name() + " + " + sb.fuseAmount() + "x " + sb.name();
-        return font.width(prefix + line + " → " + data.qty(r) + "x " + sr.name());
+        return font.width(prefix + line + " → " + data.qty(r) + "x " + sr.name()
+                + "  (" + profitText(profit) + ")");
     }
 
     /** One fuse-order row: crafts-count prefix, then a fusion label with each
      *  shard name clickable for the bazaar - same building blocks {@link
-     *  #drawLabel} uses for a plain table row - plus a manual delete button. */
+     *  #drawLabel} uses for a plain table row - the real batch profit, and a
+     *  manual delete button. */
     private static void drawFuseOrderRow(GuiGraphicsExtractor g, Font font, FusionData data,
-                                         ShoppingList.StepEntry step, int x, int y, WidgetPos p) {
+                                         ShoppingList.StepEntry step, Double profit, int x, int y, WidgetPos p) {
         int r = step.recipeIndex();
         var sa = data.shard(data.inputA(r));
         var sb = data.shard(data.inputB(r));
@@ -538,6 +703,12 @@ public final class FusionWidgets {
         }
         cx = plain(g, font, cx, y, " → " + data.qty(r) + "x ");
         cx = name(g, font, cx, y, sr.name(), p);
+
+        String profitStr = "  (" + profitText(profit) + ")";
+        int profitColour = profit == null ? Draw.DIM : profit >= 0 ? Draw.C_PROFIT : 0xFFFF6666;
+        g.text(font, profitStr, cx, y, profitColour);
+        cx += font.width(profitStr);
+
         deleteButton(g, font, cx, y, p, () -> ShoppingList.removeStep(r));
     }
 
@@ -573,13 +744,23 @@ public final class FusionWidgets {
         g.pose().popMatrix();
     }
 
-    /** Shards shown by one table, trimmed to its own row count. */
-    private static List<Scorer.Opportunity> rowsOf(FusionEngine engine, SquidUtilsConfig cfg, int t) {
-        List<Scorer.Opportunity> src = switch (t) {
-            case 1 -> engine.byCoins();
-            case 2 -> engine.byXp();
+    /** The full ranked list a table draws from, before trimming to its own
+     *  row count - {@link #buildRows} needs the untrimmed list so a
+     *  multi-step row filtered back out for no longer clearing the profit
+     *  minimum can be backfilled from further down, rather than just
+     *  shrinking the table. */
+    private static List<Scorer.Opportunity> fullSourceFor(FusionEngine engine, int t) {
+        return switch (t) {
+            case 1, 2, 3, 4 -> engine.profitVariant(t - 1);
+            case 5 -> engine.byXp();
             default -> recommendedOps(engine);
         };
+    }
+
+    /** Shards shown by one table, trimmed to its own row count - for the
+     *  graphs, which plot exactly what the table shows. */
+    private static List<Scorer.Opportunity> rowsOf(FusionEngine engine, SquidUtilsConfig cfg, int t) {
+        List<Scorer.Opportunity> src = fullSourceFor(engine, t);
         int n = Math.min(cfg.fusion.rows(t), src.size());
         return src.subList(0, Math.max(0, n));
     }
@@ -594,7 +775,7 @@ public final class FusionWidgets {
     private record Cell(String text, int colour) {}
 
     /** Which column, keyed for sorting - not display order, which is table-specific. */
-    private enum ColKey { COST, PROFIT, ROI, FILL_SEC, VOLUME, FIT, XP, XP_PER_K, STABILITY, FILL, BOTTLENECK }
+    private enum ColKey { COST, PROFIT, ROI, FILL_SEC, VOLUME, FIT, XP, XP_PER_K, STABILITY, FILL, BOTTLENECK, DEPTH_LIMIT, BATCH_PROFIT }
 
     private record Column(ColKey key, String legend, int colour) {}
 
@@ -613,30 +794,74 @@ public final class FusionWidgets {
 
     private record Row(RowData data, List<Cell> cells) {}
 
+    /** Whether a table's own buy/sell mode makes each leg instant (crossing
+     *  the spread) or a resting order that genuinely waits to fill. */
+    private record Legs(boolean buyInstant, boolean sellInstant) {}
+
+    /** Recommended and XP per fuse both trade under the global Settings -
+     *  Trading mode; each of the four Profit Shards tables has its own. */
+    private static Legs legsFor(SquidUtilsConfig cfg, int t) {
+        int buyMode, sellMode;
+        switch (t) {
+            case 1 -> { buyMode = cfg.fusion.tables.profit1.buyMode; sellMode = cfg.fusion.tables.profit1.sellMode; }
+            case 2 -> { buyMode = cfg.fusion.tables.profit2.buyMode; sellMode = cfg.fusion.tables.profit2.sellMode; }
+            case 3 -> { buyMode = cfg.fusion.tables.profit3.buyMode; sellMode = cfg.fusion.tables.profit3.sellMode; }
+            case 4 -> { buyMode = cfg.fusion.tables.profit4.buyMode; sellMode = cfg.fusion.tables.profit4.sellMode; }
+            default -> {
+                buyMode = cfg.fusion.settings.trading.buyMode;
+                sellMode = cfg.fusion.settings.trading.sellMode;
+            }
+        }
+        return new Legs(buyMode == 0, sellMode == 1);   // 0 Instabuy, 1 Instasell
+    }
+
+    /**
+     * The "how long to fill" column, mode-aware rather than a flat "fill"
+     * label everywhere: names the one leg that actually waits when only one
+     * of the two does - "sell" under Instabuy -> Sell offer, since buying is
+     * instant there and selling is the only real wait; "buy" under Buy
+     * order -> Instasell, the mirror case - and swaps to total batch profit
+     * entirely once neither leg waits at all (Instabuy -> Instasell), where
+     * "fill" would just read "instant" on every single row and say nothing
+     * a player could act on.
+     */
+    private static Column fillColumn(Legs legs, boolean recommendedFlavor) {
+        ColKey timeKey = recommendedFlavor ? ColKey.FILL_SEC : ColKey.FILL;
+        if (legs.buyInstant() && legs.sellInstant()) {
+            return new Column(ColKey.BATCH_PROFIT, "batch profit", Draw.C_BATCH);
+        }
+        if (legs.buyInstant()) return new Column(timeKey, "sell", Draw.C_FILL);
+        if (legs.sellInstant()) return new Column(timeKey, "buy", Draw.C_FILL);
+        return new Column(timeKey, "fill", Draw.C_FILL);
+    }
+
     private static List<Column> columnsFor(int t, SquidUtilsConfig cfg) {
         List<Column> cols = new ArrayList<>();
-        if (t == 2) {
+        Legs legs = legsFor(cfg, t);
+
+        if (t == 5) {
             cols.add(new Column(ColKey.COST, "cost", Draw.C_COST));
             cols.add(new Column(ColKey.XP, "xp", Draw.C_XP));
             cols.add(new Column(ColKey.XP_PER_K, "xp/1k coins", Draw.C_XP));
             cols.add(new Column(ColKey.PROFIT, "profit", Draw.C_PROFIT));
-            cols.add(new Column(ColKey.VOLUME, "sold/h", Draw.C_VOLUME));
+            cols.add(new Column(ColKey.VOLUME, "bought/h", Draw.C_VOLUME));
         } else {
             boolean rec = t == 0;
             cols.add(new Column(ColKey.COST, "cost", Draw.C_COST));
             cols.add(new Column(ColKey.PROFIT, "profit", Draw.C_PROFIT));
             cols.add(new Column(ColKey.ROI, "roi", Draw.C_ROI));
-            if (rec) cols.add(new Column(ColKey.FILL_SEC, "fill", Draw.C_FILL));
-            cols.add(new Column(ColKey.VOLUME, "sold/h", Draw.C_VOLUME));
+            if (rec) cols.add(fillColumn(legs, true));
+            cols.add(new Column(ColKey.VOLUME, "bought/h", Draw.C_VOLUME));
             if (rec) cols.add(new Column(ColKey.FIT, "fit", Draw.C_FIT));
         }
         // Shared trailing columns, same as every table's settings.
         if (cfg.fusion.tables.showStability) cols.add(new Column(ColKey.STABILITY, "stable", Draw.C_STABLE));
         boolean ownFill = t == 0;   // the recommended table already has fill, in seconds
         if (cfg.fusion.tables.showFillTimes && !ownFill) {
-            cols.add(new Column(ColKey.FILL, "fill", Draw.C_FILL));
+            cols.add(fillColumn(legs, false));
         }
         if (cfg.fusion.tables.showBottleneck) cols.add(new Column(ColKey.BOTTLENECK, "bottleneck", Draw.DIM));
+        if (cfg.fusion.tables.showDepthLimit) cols.add(new Column(ColKey.DEPTH_LIMIT, "batch", Draw.C_BATCH));
         return cols;
     }
 
@@ -652,13 +877,15 @@ public final class FusionWidgets {
             case PROFIT -> d.profit();
             case ROI -> d.roi();
             case FILL_SEC -> Recommender.fillSeconds(o);
-            case VOLUME -> o.salesPerHour();
+            case VOLUME -> o.boughtPerHour();
             case FIT -> d.fit();
             case XP -> o.xpPerFuse();
             case XP_PER_K -> d.xpPerK();
             case STABILITY -> d.stability();
             case FILL -> Recommender.fillSeconds(o);
             case BOTTLENECK -> 0;
+            case DEPTH_LIMIT -> o.depthLimitFuses();
+            case BATCH_PROFIT -> o.depthLimitFuses() * d.profit();
         };
     }
 
@@ -672,7 +899,7 @@ public final class FusionWidgets {
                 double secs = Recommender.fillSeconds(o);
                 yield secs < 1 ? "instant" : Math.round(secs) + "s";
             }
-            case VOLUME -> Draw.units(o.salesPerHour()) + "/h";
+            case VOLUME -> Draw.units(o.boughtPerHour()) + "/h";
             case FIT -> Math.round(d.fit() * 100) + "%";
             case XP -> Math.round(o.xpPerFuse()) + " xp";
             case XP_PER_K -> String.format("%.1f/1k", d.xpPerK());
@@ -685,7 +912,56 @@ public final class FusionWidgets {
                 yield secs < 1 ? "instant" : Math.round(secs) + "s";
             }
             case BOTTLENECK -> o.limiter() + "  (" + Draw.units(o.limiterVolume()) + "/h)";
+            case DEPTH_LIMIT -> {
+                long n = o.depthLimitFuses();
+                yield n >= 1_000_000 ? "1M+" : n + "x";
+            }
+            case BATCH_PROFIT -> {
+                double total = o.depthLimitFuses() * d.profit();
+                yield (total >= 0 ? "+" : "") + Draw.coins(total);
+            }
         };
+    }
+
+    /** Which Settings a table's own numbers were scored under - Recommended
+     *  and XP per fuse both use the global settings; only the four Profit
+     *  Shards tables have their own, via {@link FusionEngine#variantSettings}. */
+    private static Scorer.Settings settingsFor(FusionEngine engine, int t) {
+        return switch (t) {
+            case 1, 2, 3, 4 -> engine.variantSettings(t - 1);
+            default -> engine.currentSettings();
+        };
+    }
+
+    /**
+     * A multi-step route's real cost under a specific table's own settings -
+     * a live order-book sweep per buy, the same {@link Scorer#totalBuyCost}
+     * the shopping list and fuse order panels use, rather than {@link
+     * RouteSolver#routeCost}, which multiplies a per-unit price computed
+     * once under the global settings by each buy's quantity. For a Profit
+     * Shards variant whose own buy/sell mode differs from the global one,
+     * that mismatch showed a cost figure that did not correspond to any one
+     * coherent set of trading assumptions - confirmed from a real report of
+     * negative profit on a "Buy order -> Instasell" table while the rest of
+     * the mod defaulted to Instabuy -> Sell offer.
+     *
+     * @return the real total, or -1 if this table's own settings cannot fill
+     *         every leg of the route right now.
+     */
+    private static double liveRouteCost(FusionEngine engine, Scorer.Settings settings, RouteSolver.Route route) {
+        var products = engine.products();
+        var brain = engine.brain();
+        var data = engine.data();
+        double total = 0;
+        for (RouteSolver.Buy b : route.buys()) {
+            var shard = data.shard(b.shardIndex());
+            var product = products.get(shard.tag());
+            double cost = product == null ? -1
+                    : Scorer.totalBuyCost(product, b.units(), settings, brain.reference(shard.tag()));
+            if (cost < 0) return -1;
+            total += cost;
+        }
+        return total;
     }
 
     /**
@@ -695,7 +971,9 @@ public final class FusionWidgets {
      * <p>A route can be missing even in multi-step mode: if buying the output
      * straight off the bazaar beats every fusion route to it, {@code via} is
      * {@link RouteSolver#BUY} and the row falls back to its normal one-hop
-     * numbers rather than showing a nonsensical "0 steps".
+     * numbers rather than showing a nonsensical "0 steps". The route's own
+     * settings can also simply fail to fill right now ({@link
+     * #liveRouteCost} returning -1) - same fallback, for the same reason.
      */
     private static RowData rowData(SquidUtilsConfig cfg, FusionEngine engine, int t,
                                    Scorer.Opportunity o, double fit) {
@@ -709,13 +987,15 @@ public final class FusionWidgets {
             int via = shardIndex >= 0 ? costs.via()[shardIndex] : RouteSolver.BUY;
             if (via != RouteSolver.BUY) {
                 var route = RouteSolver.explain(data, costs, via);
-                double routeCost = RouteSolver.routeCost(data, costs, route);
-                double revenue = o.profit() + o.cost();   // recover sell-side revenue
-                cost = routeCost;
-                profit = revenue - routeCost;
-                roi = cost > 0 ? profit / cost : 0;
-                rootRecipe = via;
-                steps = route.steps().size();
+                double routeCost = liveRouteCost(engine, settingsFor(engine, t), route);
+                if (routeCost >= 0) {
+                    double revenue = o.profit() + o.cost();   // recover sell-side revenue
+                    cost = routeCost;
+                    profit = revenue - routeCost;
+                    roi = cost > 0 ? profit / cost : 0;
+                    rootRecipe = via;
+                    steps = route.steps().size();
+                }
             }
         }
 
@@ -725,16 +1005,30 @@ public final class FusionWidgets {
                 rootRecipe >= 0, rootRecipe, steps);
     }
 
-    private static List<Row> buildRows(SquidUtilsConfig cfg, FusionEngine engine, int t,
-                                       List<Scorer.Opportunity> ops, List<Column> columns) {
-        List<Row> rows = new ArrayList<>(ops.size());
+    /**
+     * Builds a table's rows straight from its full ranked list, not a
+     * pre-trimmed slice, so a row whose final profit (after any multi-step
+     * recompute above) no longer clears the configured minimum is simply
+     * skipped and backfilled from further down - the table still ends up
+     * with the row count you asked for instead of quietly showing fewer,
+     * and never shows a fusion its own numbers say is not worth doing.
+     */
+    private static List<Row> buildRows(SquidUtilsConfig cfg, FusionEngine engine, int t, List<Column> columns) {
+        List<Scorer.Opportunity> src = fullSourceFor(engine, t);
+        int wanted = cfg.fusion.rows(t);
+        double minProfit = FusionCategory.parseNumber(
+                cfg.fusion.settings.filters.minProfitPerFuse, 1000);
+
         boolean rec = t == 0;
         List<Recommender.Scored> scored = rec ? engine.recommended() : List.of();
 
-        for (int i = 0; i < ops.size(); i++) {
-            Scorer.Opportunity o = ops.get(i);
+        List<Row> rows = new ArrayList<>(Math.min(wanted, src.size()));
+        for (int i = 0; i < src.size() && rows.size() < wanted; i++) {
+            Scorer.Opportunity o = src.get(i);
             double fit = (rec && i < scored.size()) ? scored.get(i).score() : 0;
             RowData d = rowData(cfg, engine, t, o, fit);
+            if (d.profit() < minProfit) continue;
+
             List<Cell> cells = new ArrayList<>(columns.size());
             for (Column c : columns) cells.add(new Cell(textOf(c.key(), d), c.colour()));
             rows.add(new Row(d, cells));
@@ -890,10 +1184,9 @@ public final class FusionWidgets {
                                FusionEngine engine, Which which, boolean preview) {
         int t = which.table;
         WidgetPos p = pos(cfg, which);
-        List<Scorer.Opportunity> ops = rowsOf(engine, cfg, t);
 
         List<Column> columns = columnsFor(t, cfg);
-        List<Row> rows = buildRows(cfg, engine, t, ops, columns);
+        List<Row> rows = buildRows(cfg, engine, t, columns);
         applySort(t, rows, columns);
 
         List<Cell> legend = new ArrayList<>(columns.size());
@@ -904,7 +1197,7 @@ public final class FusionWidgets {
         int lineH = font.lineHeight + 1;
         int[] colX = columnOffsets(font, rows, legend);
 
-        String heading = TABLE_NAME[t];
+        String heading = tableName(cfg, t);
         String sub = subtitle(engine);
         int width = Math.max(font.width(heading) + 10 + font.width(sub), 150);
         for (Row r : rows) {

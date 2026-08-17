@@ -54,12 +54,32 @@ public final class Scorer {
             /** Rank by hunting XP per hour rather than coins per hour. */
             boolean rankByXp,
             /** Hunting Wisdom, as a percentage bonus to fusion XP. */
-            double huntingWisdom
+            double huntingWisdom,
+            /** How far the average profit per fuse may drop from the first
+             *  fuse's own, buying/selling deeper into the book, before {@link
+             *  Opportunity#depthLimitFuses()} stops counting - 0.10 for "within
+             *  10%". */
+            double depthLimitThreshold
     ) {
         public static Settings defaults() {
             return new Settings(0.00875, BuyMode.INSTA_BUY, SellMode.SELL_OFFER,
                     0.20, 0.5, 1000, 0, 5000, 0.35, 0.20, 3, true, 30.0, 0.7,
-                    Set.of(), Set.of(), Set.of(), false, 0);
+                    Set.of(), Set.of(), Set.of(), false, 0, 0.10);
+        }
+
+        /**
+         * A copy with a different buy/sell mode, everything else unchanged -
+         * lets the Profit Shards variant panels each price the market under
+         * their own trading assumption while sharing one tax rate, one set of
+         * filters and one Hunting Wisdom value with the rest of the mod,
+         * rather than needing four fully independent settings screens.
+         */
+        public Settings withMode(BuyMode buyMode, SellMode sellMode) {
+            return new Settings(tax, buyMode, sellMode, captureShare, hourAlpha,
+                    minProfitPerFuse, maxCostPerFuse, minMovingWeek, maxBookImpact,
+                    maxPremiumOverReference, minBookOrders, requireReference,
+                    maxFillMinutes, queueEfficiency, inputBlacklist, outputBlacklist,
+                    rarityFilter, rankByXp, huntingWisdom, depthLimitThreshold);
         }
     }
 
@@ -70,7 +90,19 @@ public final class Scorer {
             double fusesPerHour, double coinsPerHour, double score,
             String limiter, double limiterVolume, double fillMinutes,
             double capture, boolean measured,
-            double xpPerFuse, double xpPerHour, double salesPerHour) {
+            double xpPerFuse, double xpPerHour, double salesPerHour,
+            /** How many consecutive fuses of this recipe you could do at once
+             *  before buying/selling deeper into the order book drags the
+             *  average profit per fuse down past {@code Settings.depthLimitThreshold}
+             *  of the first fuse's own profit - see {@link #depthLimit}. */
+            long depthLimitFuses,
+            /** Units of the result instabought per hour, always the ask side
+             *  regardless of this table's own sell mode - unlike {@link
+             *  #salesPerHour}, which follows {@code cfg.sellMode()} and feeds
+             *  the Profit Shards ranking itself, this is a fixed "how much
+             *  genuine buyer demand exists" figure that reads the same way on
+             *  every one of the four Profit Shards tables side by side. */
+            double boughtPerHour) {
 
         /**
          * Hunting XP bought per coin spent - the efficiency that matters when
@@ -121,6 +153,137 @@ public final class Scorer {
         if (p == null) return Double.POSITIVE_INFINITY;
         Fill f = buy(p, 1, cfg, ref);
         return f.ok() ? f.total() : Double.POSITIVE_INFINITY;
+    }
+
+    /**
+     * Real cost to buy exactly {@code units} - the same order-book sweep (or
+     * resting-order fill model) {@link #evaluate} already runs for one fuse's
+     * worth of inputs, just exposed for an arbitrary bulk quantity instead of
+     * hardcoding a recipe's own small per-fuse amount.
+     *
+     * <p>This is deliberately not {@code unitBuyCost(...) * units}: buying 5
+     * units and buying 500 sweep different amounts of book depth, and the
+     * average price per unit is never cheaper at the larger quantity. A
+     * shopping list total built from the per-unit number understates cost
+     * the moment the queued quantity is large enough to matter.
+     *
+     * @return the real total, or -1 if the book (or settings, e.g. max fill
+     *         minutes) cannot fill the amount at all.
+     */
+    public static double totalBuyCost(Product p, long units, Settings cfg, Brain.Ref ref) {
+        if (p == null || units <= 0) return units <= 0 ? 0 : -1;
+        Fill f = buy(p, units, cfg, ref);
+        return f.ok() ? f.total() : -1;
+    }
+
+    /**
+     * Real revenue from selling exactly {@code units}, tax already taken out
+     * - the bulk-quantity counterpart to {@link #totalBuyCost}, and the same
+     * post-tax convention {@link Opportunity#profit()} uses, so a caller
+     * never has to remember to apply {@code cfg.tax()} itself.
+     *
+     * @return the real total, or -1 if it cannot be filled at all.
+     */
+    public static double totalSellRevenue(Product p, long units, Settings cfg, Brain.Ref ref) {
+        if (p == null || units <= 0) return units <= 0 ? 0 : -1;
+        Fill f = sell(p, units, cfg, ref);
+        return f.ok() ? f.total() * (1.0 - cfg.tax()) : -1;
+    }
+
+    /**
+     * Largest quantity of one product buyable in a single sweep such that
+     * the average price paid stays within {@code cfg.depthLimitThreshold} of
+     * the current top-of-book price - {@link #depthLimit}'s question for a
+     * single raw purchase instead of a full fusion's paired buy and sell,
+     * for a caller like the shopping list that queues raw quantities rather
+     * than fuses.
+     *
+     * <p>Under Buy order there is no sweep curve to exceed at all - a
+     * resting order fills at the one price it was placed at, not a
+     * depth-dependent average - so this always returns {@link
+     * Long#MAX_VALUE} in that mode rather than a number that would only
+     * ever falsely suggest a limit exists.
+     */
+    public static long buyDepthLimit(Product p, Settings cfg, Brain.Ref ref) {
+        if (p == null) return 0;
+        if (cfg.buyMode() == BuyMode.BUY_ORDER) return Long.MAX_VALUE;
+        double top = p.instaBuy();
+        if (top <= 0) return 0;
+        double ceiling = top * (1.0 + cfg.depthLimitThreshold());
+
+        long lo = 1, hi = 1;
+        while (true) {
+            long next = hi * 2;
+            double cost = totalBuyCost(p, next, cfg, ref);
+            if (cost < 0 || cost / next > ceiling) { hi = next; break; }
+            lo = next;
+            hi = next;
+            if (next > 1_000_000) break;
+        }
+        while (lo < hi) {
+            long mid = lo + (hi - lo + 1) / 2;
+            double cost = totalBuyCost(p, mid, cfg, ref);
+            if (cost >= 0 && cost / mid <= ceiling) lo = mid; else hi = mid - 1;
+        }
+        return lo;
+    }
+
+    /**
+     * The largest number of consecutive fuses of one recipe whose average
+     * profit per fuse - real order-book depth on every leg, not the first
+     * fuse's top-of-book price scaled up - stays within {@code
+     * cfg.depthLimitThreshold()} of {@code firstFuseProfit}.
+     *
+     * <p>Average profit per fuse is monotonically non-increasing as the
+     * quantity grows - buying deeper into the ask side or selling deeper
+     * into the bid side is never cheaper than the level before it - so an
+     * exponential bracket followed by a binary search finds the exact
+     * boundary in a handful of book sweeps rather than checking every
+     * quantity one at a time.
+     */
+    private static long depthLimit(Product pa, int ua, Product pb, int ub, boolean sameShard,
+                                   Product pr, int oq, Settings cfg,
+                                   Brain.Ref refA, Brain.Ref refB, Brain.Ref refR,
+                                   double firstFuseProfit) {
+        if (firstFuseProfit <= 0) return 1;
+        double floor = firstFuseProfit * (1.0 - cfg.depthLimitThreshold());
+
+        long lo = 1, hi = 1;
+        while (true) {
+            long next = hi * 2;
+            Double avg = avgProfitAt(pa, ua, pb, ub, sameShard, pr, oq, cfg, refA, refB, refR, next);
+            if (avg == null || avg < floor) { hi = next; break; }
+            lo = next;
+            hi = next;
+            if (next > 1_000_000) break;   // no realistic order book is this deep
+        }
+        while (lo < hi) {
+            long mid = lo + (hi - lo + 1) / 2;
+            Double avg = avgProfitAt(pa, ua, pb, ub, sameShard, pr, oq, cfg, refA, refB, refR, mid);
+            if (avg != null && avg >= floor) lo = mid; else hi = mid - 1;
+        }
+        return lo;
+    }
+
+    /** Average profit per fuse buying/selling {@code n} fuses' worth at
+     *  once, or null if the book cannot fill that much at all. */
+    private static Double avgProfitAt(Product pa, int ua, Product pb, int ub, boolean sameShard,
+                                      Product pr, int oq, Settings cfg,
+                                      Brain.Ref refA, Brain.Ref refB, Brain.Ref refR, long n) {
+        double cost;
+        if (sameShard) {
+            double c = totalBuyCost(pa, n * (long) (ua + ub), cfg, refA);
+            if (c < 0) return null;
+            cost = c;
+        } else {
+            double ca = totalBuyCost(pa, n * (long) ua, cfg, refA);
+            double cb = totalBuyCost(pb, n * (long) ub, cfg, refB);
+            if (ca < 0 || cb < 0) return null;
+            cost = ca + cb;
+        }
+        double revenue = totalSellRevenue(pr, n * (long) oq, cfg, refR);
+        if (revenue < 0) return null;
+        return (revenue - cost) / n;
     }
 
     public static List<Opportunity> evaluate(FusionData data,
@@ -229,15 +392,23 @@ public final class Scorer {
             // Units per hour the result actually trades - the market's raw
             // appetite, before any assumption about your share of it.
             double salesPerHour = flowOf(dr, outSide, pr, cfg);
+            // Always the ask side - unlike salesPerHour above, this does not
+            // flip with sellMode, so it reads the same way regardless of
+            // which of the four Profit Shards tables it is shown on.
+            double boughtPerHour = flowOf(dr, "ask", pr, cfg);
 
             double rank = (cfg.rankByXp() ? xpPerHour : coinsPerHour) * hourFactor;
+
+            long depthLimitFuses = depthLimit(pa, ua, pb, ub, sameShard, pr, oq, cfg,
+                    brain.reference(sa.tag()), brain.reference(sb.tag()), brain.reference(sr.tag()),
+                    profit);
 
             out.add(new Opportunity(r, label(sameShard, ua, ub, oq, sa, sb, sr),
                     sr.tag(), sr.name(), sr.rarity(),
                     cost, profit, profit / cost,
                     fusesPerHour, coinsPerHour, rank,
                     limiter, limiterVolume, fillIn + fs.minutes, capture, measured,
-                    xpPerFuse, xpPerHour, salesPerHour));
+                    xpPerFuse, xpPerHour, salesPerHour, depthLimitFuses, boughtPerHour));
         }
 
         out.sort(Comparator.comparingDouble(Opportunity::score).reversed());

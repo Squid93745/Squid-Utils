@@ -33,6 +33,7 @@ public final class Draw {
     public static final int C_VOLUME = 0xFF9E9EFF; // market volume
     public static final int C_STABLE = 0xFFB86BFF; // steadiness
     public static final int C_FIT = 0xFFFF6BE8;    // recommendation score
+    public static final int C_BATCH = 0xFF6BE8C8;  // fuses before the order book bites back
 
     private Draw() {}
 
@@ -84,9 +85,9 @@ public final class Draw {
     /** Border tint per table group, matching the accordion they live under. */
     public static int groupColour(int table) {
         return switch (table) {
-            case 1 -> 0xC055FF55;   // profit per fuse
-            case 2 -> 0xC0E8E86B;   // xp per fuse
-            default -> 0xC0B86BFF;  // recommended
+            case 1, 2, 3, 4 -> 0xC055FF55;   // profit shards (all four variants)
+            case 5 -> 0xC0E8E86B;            // xp per fuse
+            default -> 0xC0B86BFF;           // recommended
         };
     }
 

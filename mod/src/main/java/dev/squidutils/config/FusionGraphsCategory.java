@@ -8,9 +8,11 @@ import io.github.notenoughupdates.moulconfig.annotations.ConfigOption;
 import io.github.notenoughupdates.moulconfig.annotations.SearchTag;
 
 /**
- * Plots attached to each table, under Shard Fusion in the sidebar.
+ * Plots attached to Recommended and XP per fuse, under Shard Fusion in the
+ * sidebar - not the four Profit Shards tables, which have no graphs by
+ * design; see {@link FusionTablesCategory.ProfitVariant}.
  *
- * <p>One accordion per table rather than nine flat checkboxes in a row: each
+ * <p>One accordion per table rather than six flat checkboxes in a row: each
  * table's three metrics (profit / demand / XP per coin) now live together
  * instead of being told apart only by a name prefix.
  *
@@ -31,11 +33,6 @@ public class FusionGraphsCategory {
     @ConfigOption(name = "Recommended", desc = "Graphs for the Recommended table.")
     @Accordion
     public RecommendedGraphs recommended = new RecommendedGraphs();
-
-    @Expose
-    @ConfigOption(name = "Profit Shards", desc = "Graphs for the Profit Shards table.")
-    @Accordion
-    public ProfitShardsGraphs profitShards = new ProfitShardsGraphs();
 
     @Expose
     @ConfigOption(name = "XP table", desc = "Graphs for the XP per fuse table.")
@@ -59,26 +56,6 @@ public class FusionGraphsCategory {
         @ConfigOption(name = "XP per coin graph", desc = "XP per 1,000 coins.")
         @ConfigEditorBoolean
         @SearchTag("graph xp coin recommended")
-        public boolean xpGraph = false;
-    }
-
-    public static class ProfitShardsGraphs {
-        @Expose
-        @ConfigOption(name = "Profit graph", desc = "Profit per fuse over time.")
-        @ConfigEditorBoolean
-        @SearchTag("graph profit shards")
-        public boolean profitGraph = false;
-
-        @Expose
-        @ConfigOption(name = "Demand graph", desc = "Units sold per hour.")
-        @ConfigEditorBoolean
-        @SearchTag("graph demand shards")
-        public boolean demandGraph = false;
-
-        @Expose
-        @ConfigOption(name = "XP per coin graph", desc = "XP per 1,000 coins.")
-        @ConfigEditorBoolean
-        @SearchTag("graph xp coin shards")
         public boolean xpGraph = false;
     }
 

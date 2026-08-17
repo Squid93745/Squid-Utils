@@ -4,10 +4,12 @@ import com.google.gson.annotations.Expose;
 import io.github.notenoughupdates.moulconfig.annotations.Accordion;
 import io.github.notenoughupdates.moulconfig.annotations.ConfigEditorBoolean;
 import io.github.notenoughupdates.moulconfig.annotations.ConfigEditorDropdown;
+import io.github.notenoughupdates.moulconfig.annotations.ConfigEditorKeybind;
 import io.github.notenoughupdates.moulconfig.annotations.ConfigEditorSlider;
 import io.github.notenoughupdates.moulconfig.annotations.ConfigEditorText;
 import io.github.notenoughupdates.moulconfig.annotations.ConfigOption;
 import io.github.notenoughupdates.moulconfig.annotations.SearchTag;
+import org.lwjgl.glfw.GLFW;
 
 /**
  * How you buy and sell, what gets filtered out, and scoring internals - under
@@ -30,6 +32,12 @@ public class FusionSettingsCategory {
     @ConfigOption(name = "Advanced", desc = "Scoring internals")
     @Accordion
     public Advanced advanced = new Advanced();
+
+    @Expose
+    @ConfigOption(name = "Quick Fuse",
+            desc = "A hotkey for the Fusion Box's own repeat/confirm prompts.")
+    @Accordion
+    public QuickFuse quickFuse = new QuickFuse();
 
     public static class Trading {
         @Expose
@@ -75,6 +83,17 @@ public class FusionSettingsCategory {
         @ConfigEditorSlider(minValue = 1, maxValue = 180, minStep = 1)
         @SearchTag("fill wait timeout minutes")
         public int maxFillMinutes = 30;
+
+        @Expose
+        @ConfigOption(name = "Batch profit tolerance",
+                desc = "How far the average profit per fuse is allowed to drop "
+                        + "from the first fuse's own, from buying/selling deeper "
+                        + "into the order book, before a table's \"batch\" column "
+                        + "and the shopping list stop counting more fuses as "
+                        + "still worth it. 10% is a reasonable default.")
+        @ConfigEditorSlider(minValue = 0.01f, maxValue = 0.50f, minStep = 0.01f)
+        @SearchTag("batch depth limit tolerance profit drop order book")
+        public float depthLimitThreshold = 0.10f;
     }
 
     public static class Filters {
@@ -169,9 +188,28 @@ public class FusionSettingsCategory {
         public float queueEfficiency = 0.7f;
 
         @Expose
-        @ConfigOption(name = "Refresh interval", desc = "Seconds between bazaar refreshes.")
+        @ConfigOption(name = "Refresh interval",
+                desc = "Seconds between bazaar refreshes - affects the tables, "
+                        + "the graphs, and how quickly a Bazaar order alert can "
+                        + "fire. 20 is the floor: Hypixel's own bazaar data does "
+                        + "not update meaningfully faster than that, so polling "
+                        + "quicker would not get you fresher numbers, just more "
+                        + "requests for the same ones.")
         @ConfigEditorSlider(minValue = 20, maxValue = 300, minStep = 5)
         @SearchTag("refresh interval poll seconds update")
-        public int refreshSeconds = 60;
+        public int refreshSeconds = 20;
+    }
+
+    public static class QuickFuse {
+        @Expose
+        @ConfigOption(name = "Quick fuse hotkey",
+                desc = "Press while the Fusion Box shows \"Click to repeat this "
+                        + "fusion!\" or \"Click to fuse!\" to click it - exactly "
+                        + "the same as clicking it with the mouse. Does nothing "
+                        + "otherwise, and never fires on its own. Unbound by "
+                        + "default.")
+        @ConfigEditorKeybind(defaultKey = GLFW.GLFW_KEY_UNKNOWN)
+        @SearchTag("quick fuse repeat confirm hotkey keybind fusion box")
+        public int key = GLFW.GLFW_KEY_UNKNOWN;
     }
 }

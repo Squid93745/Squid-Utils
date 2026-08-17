@@ -82,7 +82,7 @@ public class HudEditorScreen extends Screen {
             // panel borders in Draw.panel looked correct while this did not.
             g.outline(p.x - 1, p.y - 1, w + 2, h + 2, hot ? 0xFFB86BFF : 0x60FFFFFF);
 
-            String label = FusionWidgets.title(which)
+            String label = FusionWidgets.title(cfg, which)
                     + String.format("  %.0f%%", p.scale * 100);
             g.text(minecraft.font, label, p.x, p.y - minecraft.font.lineHeight - 2,
                     hot ? 0xFFFFFFFF : 0xFF9A9A9A);

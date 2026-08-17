@@ -12,7 +12,9 @@ public class GeneralCategory {
     /** Runnable id wired up in {@link SquidUtilsConfig}. */
     public static final int OPEN_EDITOR = 0;
 
-    public static final int TABLES = 3;
+    // 0 Recommended, 1-4 the four Profit Shards tables, 5 XP per fuse - see
+    // FusionCategory.tableShown() for the same numbering.
+    public static final int TABLES = 6;
     public static final int GRAPHS_PER_TABLE = 3;
 
     @Expose
@@ -50,9 +52,12 @@ public class GeneralCategory {
 
     private static WidgetPos[] defaultTables() {
         return new WidgetPos[]{
-                new WidgetPos(8, 8, 1.0f),
-                new WidgetPos(8, 150, 1.0f),
-                new WidgetPos(8, 300, 1.0f),
+                new WidgetPos(8, 8, 1.0f),     // 0 Recommended
+                new WidgetPos(8, 150, 1.0f),   // 1 Profit Shards 1
+                new WidgetPos(250, 150, 1.0f), // 2 Profit Shards 2
+                new WidgetPos(8, 300, 1.0f),   // 3 Profit Shards 3
+                new WidgetPos(250, 300, 1.0f), // 4 Profit Shards 4
+                new WidgetPos(8, 450, 1.0f),   // 5 XP per fuse
         };
     }
 

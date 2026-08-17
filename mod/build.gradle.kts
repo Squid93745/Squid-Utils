@@ -88,6 +88,19 @@ tasks.processResources {
 val prismMods = "${System.getenv("APPDATA")}\\PrismLauncher\\instances\\Skyblock 1.26.1.2\\minecraft\\mods"
 
 tasks.register<Copy>("installMod") {
+    // The jar filename carries the version, so bumping mod_version does not
+    // overwrite the previous install - it would sit alongside it, and Fabric
+    // Loader finding two jars both declaring mod id "squidutils" is a real
+    // problem, not just clutter. Deleted first, not left for a human to
+    // notice next time the mods folder is opened.
+    doFirst {
+        val dir = file(prismMods)
+        if (dir.isDirectory) {
+            val keep = tasks.jar.flatMap { it.archiveFile }.get().asFile.name
+            dir.listFiles { f -> f.name.startsWith("squidutils-") && f.name.endsWith(".jar") && f.name != keep }
+                ?.forEach { it.delete() }
+        }
+    }
     from(tasks.jar.flatMap { it.archiveFile })
     into(prismMods)
     onlyIf { file(prismMods).isDirectory }

@@ -12,8 +12,10 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -21,10 +23,11 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
 /**
- * Owns the data, the refresh loop, and the current ranking.
+ * Owns the data, the refresh loop, and the current rankings.
  *
  * <p>All network and scoring work happens on a single daemon thread; the render
- * thread only ever reads {@link #current()}, which is swapped atomically. A
+ * thread only ever reads the {@code volatile} result lists ({@link #profitVariant},
+ * {@link #byXp()}, {@link #recommended()}), each swapped atomically. A
  * 135,000-recipe rescore has no business happening during a frame.
  */
 public final class FusionEngine {
@@ -49,14 +52,19 @@ public final class FusionEngine {
     private final FusionData data;
     private final Path brainPath;
     private final Supplier<Scorer.Settings> settings;
+    private final Supplier<Scorer.Settings[]> profitVariantSettings;
     private final Supplier<Integer> topN;
 
     private volatile Brain brain;
     private volatile RouteSolver.Costs routeCosts;
     private volatile RouteSolver.Costs directCosts;
     private volatile double[] buyCosts;
-    private volatile List<Scorer.Opportunity> current = List.of();
-    private volatile List<Scorer.Opportunity> byCoins = List.of();
+    // Index 0-3, matching FusionCategory's Profit Shards variants 1-4 - one
+    // scored+sorted list per table, each under its own configured buy/sell
+    // mode. Variant 0 (the default Instabuy/Sell-offer combination) is also
+    // the one that feeds history/stability - see record() below.
+    private volatile List<List<Scorer.Opportunity>> profitVariants =
+            List.of(List.of(), List.of(), List.of(), List.of());
     private volatile List<Scorer.Opportunity> byXp = List.of();
     private volatile List<Recommender.Scored> recommended = List.of();
     private volatile long lastRefresh = 0L;
@@ -65,11 +73,12 @@ public final class FusionEngine {
     /** Keyed by result tag so a shard's line survives re-ranking. */
     private final java.util.Map<String, Deque<Point>> history = new java.util.HashMap<>();
 
-    public FusionEngine(FusionData data, Path brainPath,
-                           Supplier<Scorer.Settings> settings, Supplier<Integer> topN) {
+    public FusionEngine(FusionData data, Path brainPath, Supplier<Scorer.Settings> settings,
+                           Supplier<Scorer.Settings[]> profitVariantSettings, Supplier<Integer> topN) {
         this.data = data;
         this.brainPath = brainPath;
         this.settings = settings;
+        this.profitVariantSettings = profitVariantSettings;
         this.topN = topN;
         this.brain = Brain.loadOrEmpty(brainPath);
     }
@@ -78,9 +87,27 @@ public final class FusionEngine {
         return FusionData.load(in);
     }
 
-    public void start(int intervalSeconds) {
-        worker.scheduleWithFixedDelay(this::refresh, 0,
-                Math.max(20, intervalSeconds), TimeUnit.SECONDS);
+    private Supplier<Integer> refreshSecondsSupplier;
+
+    /**
+     * Self-reschedules after every run rather than {@code
+     * scheduleWithFixedDelay}, which locks the interval in for good the
+     * moment it is called - a real report confirmed this: lowering "Refresh
+     * interval" in the settings screen changed nothing, because the already-
+     * running scheduled task had no way to notice. Re-reading the supplier
+     * before each reschedule means the very next cycle picks up a changed
+     * setting instead of needing a restart to take effect.
+     */
+    public void start(Supplier<Integer> refreshSecondsSupplier) {
+        this.refreshSecondsSupplier = refreshSecondsSupplier;
+        scheduleNext(0);
+    }
+
+    private void scheduleNext(long delaySeconds) {
+        worker.schedule(() -> {
+            refresh();
+            scheduleNext(Math.max(20, refreshSecondsSupplier.get()));
+        }, delaySeconds, TimeUnit.SECONDS);
     }
 
     public void stop() {
@@ -135,18 +162,28 @@ public final class FusionEngine {
             for (int i = 0; i < buy.length; i++) buy[i] = unitBuyCost.applyAsDouble(i);
             buyCosts = buy;
 
-            // Three independent views over one evaluation. Scoring 135k recipes
-            // three times would be wasteful; re-sorting the result is trivial.
-            // Both tables rank per fuse, not per hour: the question they answer
-            // is "which single fusion should I do", not "what maximises a grind".
-            // Profit Shards: margin multiplied by how fast the market absorbs
-            // it. A 400k margin on a shard trading twice an hour loses to a 40k
-            // margin on one trading five hundred times, and ranking on margin
-            // alone hides that entirely.
-            var coins = new ArrayList<>(all);
-            coins.sort(Comparator.comparingDouble(
-                    (Scorer.Opportunity o) -> o.profit() * o.salesPerHour()).reversed());
-            byCoins = Scorer.dedupe(coins, 1, n);
+            // Profit Shards: up to four independently-configured trading-mode
+            // variants, each ranked by margin multiplied by how fast the
+            // market absorbs it - a 400k margin on a shard trading twice an
+            // hour loses to a 40k margin on one trading five hundred times,
+            // and ranking on margin alone hides that entirely. Settings is a
+            // record, so two variant slots left on the same buy/sell mode
+            // compare equal and share one Scorer.evaluate() call rather than
+            // scoring the identical thing twice; the base evaluation above is
+            // reused outright when a variant happens to match it exactly.
+            Map<Scorer.Settings, List<Scorer.Opportunity>> byVariantSettings = new HashMap<>();
+            List<List<Scorer.Opportunity>> variants = new ArrayList<>(4);
+            for (Scorer.Settings vs : profitVariantSettings.get()) {
+                variants.add(byVariantSettings.computeIfAbsent(vs, key -> {
+                    var evaluated = key.equals(cfg) ? all
+                            : Scorer.evaluate(data, bazaar.products(), brain, key, hour);
+                    var coins = new ArrayList<>(evaluated);
+                    coins.sort(Comparator.comparingDouble(
+                            (Scorer.Opportunity o) -> o.profit() * o.salesPerHour()).reversed());
+                    return Scorer.dedupe(coins, 1, n);
+                }));
+            }
+            profitVariants = variants;
 
             // XP per fuse only takes five distinct values, so on its own it
             // would leave every legendary tied in arbitrary order. Coins spent
@@ -158,13 +195,14 @@ public final class FusionEngine {
 
             recommended = Recommender.rank(all, n);
 
-            current = byCoins;
             lastRefresh = System.currentTimeMillis();
             status = all.size() + " viable";
 
             // Record every shard on show, so a graph line exists for whichever
-            // table the player actually has open.
-            List<Scorer.Opportunity> shown = new ArrayList<>(byCoins);
+            // table the player actually has open. Only the first Profit
+            // Shards variant feeds this - see the field doc on profitVariants
+            // for why the other three do not need their own history.
+            List<Scorer.Opportunity> shown = new ArrayList<>(variants.get(0));
             shown.addAll(byXp);
             for (var r : recommended) shown.add(r.opportunity());
             record(shown);
@@ -268,16 +306,47 @@ public final class FusionEngine {
 
     public void setBackfill(Runnable backfill) { this.backfill = backfill; }
 
-    public List<Scorer.Opportunity> current() { return current; }
-    public List<Scorer.Opportunity> byCoins() { return byCoins; }
+    /** One of the four Profit Shards tables' scored+sorted rows. {@code index} is
+     *  0-3, matching config's variants 1-4. */
+    public List<Scorer.Opportunity> profitVariant(int index) { return profitVariants.get(index); }
+
+    /** The exact Settings one of the four Profit Shards tables was scored
+     *  under - fetched fresh, not cached, so a caller recomputing something
+     *  for that table (a multi-step route's real cost, say) stays under the
+     *  same trading assumptions {@link #profitVariant} already used, instead
+     *  of silently mixing this table's numbers with the global settings'. */
+    public Scorer.Settings variantSettings(int index) { return profitVariantSettings.get()[index]; }
     public List<Scorer.Opportunity> byXp() { return byXp; }
     public List<Recommender.Scored> recommended() { return recommended; }
     public long lastRefresh() { return lastRefresh; }
+    /** Hypixel's own {@code lastUpdated} on the bazaar reply, not the local
+     *  clock time we happened to poll at - see {@link BazaarClient#lastUpdated()}.
+     *  Hypixel's backend only advances this every so often regardless of how
+     *  often we ask, so two of our own polls can carry the same value; a
+     *  caller that needs to know it is looking at a genuinely new market
+     *  snapshot (not the same cached reply read twice) should compare this,
+     *  not {@link #lastRefresh()}. */
+    public long bazaarSnapshotTime() { return bazaar.lastUpdated(); }
     public String status() { return status; }
     public Brain brain() { return brain; }
     public FusionData data() { return data; }
     public RouteSolver.Costs routeCosts() { return routeCosts; }
     public RouteSolver.Costs directCosts() { return directCosts; }
     public double[] buyCosts() { return buyCosts; }
+
+    /** Live bazaar prices, for callers that need a real order-book sweep at
+     *  an arbitrary quantity - the shopping list and fuse order panels, via
+     *  {@link Scorer#totalBuyCost}/{@link Scorer#totalSellRevenue} - rather
+     *  than the per-fuse quantities {@link #refresh} itself scores. */
+    public java.util.Map<String, dev.squidutils.fusion.data.BazaarClient.Product> products() {
+        return bazaar.products();
+    }
+
+    /** The same settings the last refresh scored everything with - fetched
+     *  fresh from the supplier, not cached, so it always matches whatever the
+     *  config screen currently says even between refreshes. */
+    public Scorer.Settings currentSettings() {
+        return settings.get();
+    }
     public int pricedProducts() { return bazaar.products().size(); }
 }

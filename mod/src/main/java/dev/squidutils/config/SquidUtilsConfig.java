@@ -21,9 +21,18 @@ import io.github.notenoughupdates.moulconfig.processor.ProcessedCategory;
  */
 public class SquidUtilsConfig extends Config {
 
+    /**
+     * Reads the version straight from the mod's own metadata rather than a
+     * second hardcoded copy here, so bumping {@code mod_version} in {@code
+     * gradle.properties} is the only place that needs to change.
+     */
     @Override
     public StructuredText getTitle() {
-        return StructuredText.of("Squid Utils");
+        String version = net.fabricmc.loader.api.FabricLoader.getInstance()
+                .getModContainer(dev.squidutils.SquidUtils.MOD_ID)
+                .map(c -> c.getMetadata().getVersion().getFriendlyString())
+                .orElse("");
+        return StructuredText.of("Squid Utils " + version + " by Squid93745");
     }
 
     /** Search matches category names too, not just the options inside them. */
@@ -52,6 +61,10 @@ public class SquidUtilsConfig extends Config {
         switch (runnableId) {
             case GeneralCategory.OPEN_EDITOR -> net.minecraft.client.Minecraft.getInstance()
                     .setScreen(new dev.squidutils.hud.HudEditorScreen());
+            case FrozenBlazeCategory.TEST_SOUND -> dev.squidutils.fishing.FrozenBlazeOverlay.testSound();
+            case FrozenBlazeCategory.LIST_SOUNDS -> dev.squidutils.fishing.FrozenBlazeOverlay.listSounds();
+            case BazaarCategory.TEST_SOUND -> dev.squidutils.bazaar.OrderTracker.testSound();
+            case BazaarCategory.LIST_SOUNDS -> dev.squidutils.bazaar.OrderTracker.listSounds();
             default -> super.executeRunnable(runnableId);
         }
     }
@@ -59,6 +72,10 @@ public class SquidUtilsConfig extends Config {
     @Override
     public boolean isValidRunnable(int runnableId) {
         return runnableId == GeneralCategory.OPEN_EDITOR
+                || runnableId == FrozenBlazeCategory.TEST_SOUND
+                || runnableId == FrozenBlazeCategory.LIST_SOUNDS
+                || runnableId == BazaarCategory.TEST_SOUND
+                || runnableId == BazaarCategory.LIST_SOUNDS
                 || super.isValidRunnable(runnableId);
     }
 
@@ -71,10 +88,14 @@ public class SquidUtilsConfig extends Config {
     public FusionCategory fusion = new FusionCategory();
 
     @Expose
-    @Category(name = "Fishing", desc = "Sea creatures, hotspots and catch tracking")
+    @Category(name = "Fishing", desc = "Frozen Blaze and other fishing quality-of-life")
     public FishingCategory fishing = new FishingCategory();
 
     @Expose
     @Category(name = "Bestiary", desc = "Kill tracking and bestiary progress")
     public BestiaryCategory bestiary = new BestiaryCategory();
+
+    @Expose
+    @Category(name = "Bazaar", desc = "Warn when a placed order is no longer the best price")
+    public BazaarCategory bazaar = new BazaarCategory();
 }

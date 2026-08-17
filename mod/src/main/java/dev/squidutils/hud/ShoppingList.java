@@ -46,6 +46,18 @@ public final class ShoppingList {
         ITEMS.remove(shardIndex);
     }
 
+    /** Clamps a line to an exact quantity - the shopping list's "batch"
+     *  button uses this to pull an over-budget line back down to the
+     *  quantity {@code Scorer.buyDepthLimit} says still stays within the
+     *  book's price tolerance, rather than just warning about it. */
+    public static void setUnits(int shardIndex, int units) {
+        if (units <= 0) {
+            ITEMS.remove(shardIndex);
+        } else {
+            ITEMS.put(shardIndex, units);
+        }
+    }
+
     public static void removeStep(int recipeIndex) {
         STEP_CRAFTS.remove(recipeIndex);
     }

@@ -19,7 +19,9 @@ import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.File;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -80,7 +82,9 @@ public class SquidUtils implements ClientModInitializer {
             LOG.warn("[squidutils] could not create config dir", e);
         }
 
-        config = ManagedConfig.create(dir.resolve("config.json").toFile(), SquidUtilsConfig.class);
+        File configFile = dir.resolve("config.json").toFile();
+        migrateConfig(configFile);
+        config = ManagedConfig.create(configFile, SquidUtilsConfig.class);
 
         FusionData data;
         try (InputStream in = SquidUtils.class
@@ -121,6 +125,7 @@ public class SquidUtils implements ClientModInitializer {
 
         engine = new FusionEngine(data, brainPath,
                 SquidUtils::settings,
+                SquidUtils::profitVariantSettings,
                 () -> config.getInstance().fusion.maxRows());
         // Backfill runs on the engine's own worker after a refresh, so it never
         // touches the render thread and always has a populated table to work
@@ -131,11 +136,23 @@ public class SquidUtils implements ClientModInitializer {
             if (backfill.needsRun(cfg)) backfill.run(cfg, settings());
         });
 
-        engine.start(config.getInstance().fusion.settings.advanced.refreshSeconds);
+        engine.start(() -> config.getInstance().fusion.settings.advanced.refreshSeconds);
 
         FusionHud hud = new FusionHud(engine, SquidUtils::config);
         HudElementRegistry.addLast(
                 Identifier.fromNamespaceAndPath(MOD_ID, "panel"), hud);
+
+        // Drawn last so the stillness tint sits over everything else,
+        // including the fusion panels above.
+        HudElementRegistry.addLast(
+                Identifier.fromNamespaceAndPath(MOD_ID, "frozen-blaze"),
+                dev.squidutils.fishing.FrozenBlazeOverlay::render);
+
+        // Drawn after that too - a title card, not a positioned panel, so
+        // it belongs on top of everything else this mod draws.
+        HudElementRegistry.addLast(
+                Identifier.fromNamespaceAndPath(MOD_ID, "order-splash"),
+                dev.squidutils.bazaar.OrderSplash::render);
 
         // The "cheapest fusion" line on a shard's own bazaar tooltip - a
         // completely different mechanism from the panel-hover tooltip above,
@@ -221,10 +238,15 @@ public class SquidUtils implements ClientModInitializer {
         dev.squidutils.fusion.SessionTracker.setShards(shardRarities);
 
         net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents.GAME
-                .register((message, overlay) -> TRACKER.onChat(message.getString(), overlay));
+                .register((message, overlay) -> {
+                    TRACKER.onChat(message.getString(), overlay);
+                    if (!overlay) dev.squidutils.bazaar.OrderTracker.onChat(message.getString());
+                });
         net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents.CHAT
-                .register((message, signed, sender, params, time) ->
-                        TRACKER.onChat(message.getString(), false));
+                .register((message, signed, sender, params, time) -> {
+                    TRACKER.onChat(message.getString(), false);
+                    dev.squidutils.bazaar.OrderTracker.onChat(message.getString());
+                });
 
         // /squidutils and /squid both open the settings. Client-side commands,
         // so they never reach Hypixel.
@@ -315,6 +337,8 @@ public class SquidUtils implements ClientModInitializer {
             }
             dev.squidutils.fusion.WisdomDetector.tick(client);
             TRACKER.tick();
+            dev.squidutils.fishing.FrozenBlazeOverlay.tick(client);
+            dev.squidutils.bazaar.OrderTracker.tick(client);
         });
 
         // The configurable "open route hotkey": not a registered KeyMapping,
@@ -339,7 +363,124 @@ public class SquidUtils implements ClientModInitializer {
             hotkeyWasDown[0] = down;
         });
 
+        // Same edge-detected polling as the route hotkey above - see
+        // QuickFuse's own doc for why a single keypress clicking one known
+        // prompt is not the same thing as a macro.
+        boolean[] quickFuseWasDown = {false};
+        ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            var cfg = config();
+            if (cfg == null) return;
+            int key = cfg.fusion.settings.quickFuse.key;
+            boolean down = key != GLFW.GLFW_KEY_UNKNOWN
+                    && com.mojang.blaze3d.platform.InputConstants.isKeyDown(client.getWindow(), key);
+            if (down && !quickFuseWasDown[0]) {
+                dev.squidutils.fusion.QuickFuse.press(client);
+            }
+            quickFuseWasDown[0] = down;
+        });
+
         LOG.info("[squidutils] ready - press \\ for settings");
+    }
+
+    /**
+     * One-time fixups for a {@code config.json} written by an older build,
+     * run before {@link ManagedConfig} ever loads the file.
+     *
+     * <p>Renaming a config field is not free: Gson silently drops whatever
+     * sat under the old name rather than carrying it over, which from the
+     * player's side looks exactly like "my settings keep resetting after an
+     * update" - a real report, not a hypothetical one, after Profit Shards
+     * went from one table to four ({@code profitShards} -> {@code profit1..4}
+     * in {@code FusionTablesCategory}). This patches the raw JSON to the
+     * shape the current classes expect before Gson ever sees it, so a
+     * genuine rename does not read as data loss.
+     *
+     * <p>Safe by construction: a missing file (fresh install) is a no-op, and
+     * anything this does not specifically recognise is left completely
+     * alone - it never invents a migration for shapes it was not written for.
+     */
+    private static void migrateConfig(File file) {
+        if (!file.isFile()) return;
+        try {
+            com.google.gson.JsonObject root;
+            try (var reader = Files.newBufferedReader(file.toPath(), StandardCharsets.UTF_8)) {
+                root = com.google.gson.JsonParser.parseReader(reader).getAsJsonObject();
+            }
+            boolean changed = false;
+
+            com.google.gson.JsonObject fusion = childObject(root, "fusion");
+            com.google.gson.JsonObject tables = childObject(fusion, "tables");
+            // 0.1.x: one "Profit Shards" table -> four independently
+            // configured variants (profit1-4). The old table's own show/
+            // rows/multiStep become the first variant's - it played the same
+            // "the one Profit Shards table" role the old field did, so its
+            // settings are the closest thing to a correct carry-over.
+            if (tables != null && tables.has("profitShards") && !tables.has("profit1")) {
+                com.google.gson.JsonObject old = tables.getAsJsonObject("profitShards");
+                com.google.gson.JsonObject migrated = new com.google.gson.JsonObject();
+                for (String field : new String[]{"show", "rows", "multiStep"}) {
+                    if (old.has(field)) migrated.add(field, old.get(field));
+                }
+                tables.add("profit1", migrated);
+                tables.remove("profitShards");
+                changed = true;
+            }
+
+            com.google.gson.JsonObject general = childObject(root, "general");
+            // Table index space grew from 3 slots (Recommended, Profit
+            // Shards, XP) to 6 (Recommended, Profit Shards 1-4, XP) in the
+            // same update - old slot 1 becomes the new profit1 slot (same
+            // table), and old slot 2 (XP) moves to new slot 5 rather than
+            // being silently inherited by profit2, an unrelated new panel.
+            // normalise() backfills the null gaps with fresh defaults itself.
+            if (general != null) {
+                changed |= migrateTableSlots(general, "tablePos");
+                changed |= migrateGraphSlots(general, "graphPos");
+            }
+
+            if (changed) {
+                try (var writer = Files.newBufferedWriter(file.toPath(), StandardCharsets.UTF_8)) {
+                    new com.google.gson.Gson().toJson(root, writer);
+                }
+                LOG.info("[squidutils] migrated config.json to the current settings layout");
+            }
+        } catch (Exception e) {
+            LOG.warn("[squidutils] config migration failed, leaving config.json as-is", e);
+        }
+    }
+
+    private static com.google.gson.JsonObject childObject(com.google.gson.JsonObject parent, String key) {
+        return parent != null && parent.has(key) && parent.get(key).isJsonObject()
+                ? parent.getAsJsonObject(key) : null;
+    }
+
+    private static boolean migrateTableSlots(com.google.gson.JsonObject general, String key) {
+        if (!general.has(key) || !general.get(key).isJsonArray()) return false;
+        var old = general.getAsJsonArray(key);
+        if (old.size() != 3) return false;
+
+        var fresh = new com.google.gson.JsonArray();
+        fresh.add(old.get(0));
+        fresh.add(old.get(1));
+        for (int i = 0; i < 3; i++) fresh.add(com.google.gson.JsonNull.INSTANCE);
+        fresh.set(5, old.get(2));
+        general.add(key, fresh);
+        return true;
+    }
+
+    /** As {@link #migrateTableSlots}, but for {@code graphPos}'s per-table
+     *  array of three graph positions each, rather than one position. */
+    private static boolean migrateGraphSlots(com.google.gson.JsonObject general, String key) {
+        if (!general.has(key) || !general.get(key).isJsonArray()) return false;
+        var old = general.getAsJsonArray(key);
+        if (old.size() != 3) return false;
+
+        var fresh = new com.google.gson.JsonArray();
+        fresh.add(old.get(0));
+        for (int i = 0; i < 4; i++) fresh.add(com.google.gson.JsonNull.INSTANCE);
+        fresh.set(5, old.get(2));
+        general.add(key, fresh);
+        return true;
     }
 
     /** Translate the GUI config into what the scorer actually consumes. */
@@ -374,7 +515,30 @@ public class SquidUtils implements ClientModInitializer {
                 // Each table sorts itself now, so the scorer's own ranking mode
                 // is no longer what decides order.
                 false,
-                c.fusion.general.huntingWisdom);
+                c.fusion.general.huntingWisdom,
+                c.fusion.settings.trading.depthLimitThreshold);
+    }
+
+    /**
+     * One {@link Scorer.Settings} per Profit Shards table (index 0-3 for
+     * config's variants 1-4), sharing every field from {@link #settings()}
+     * except buy/sell mode - so each table prices the market its own way
+     * without needing four full copies of tax, filters and every other
+     * scoring input to stay in sync by hand.
+     */
+    private static Scorer.Settings[] profitVariantSettings() {
+        Scorer.Settings base = settings();
+        SquidUtilsConfig c = config.getInstance();
+        Scorer.Settings[] out = new Scorer.Settings[4];
+        for (int i = 0; i < out.length; i++) {
+            int variant = i + 1;
+            Scorer.BuyMode buy = c.fusion.profitVariantBuyMode(variant) == 0
+                    ? Scorer.BuyMode.INSTA_BUY : Scorer.BuyMode.BUY_ORDER;
+            Scorer.SellMode sell = c.fusion.profitVariantSellMode(variant) == 0
+                    ? Scorer.SellMode.SELL_OFFER : Scorer.SellMode.INSTA_SELL;
+            out[i] = base.withMode(buy, sell);
+        }
+        return out;
     }
 
     /**

@@ -65,7 +65,7 @@ public final class HistoryBackfill {
     public void run(SquidUtilsConfig cfg, Scorer.Settings settings) {
         int minutes = BACKFILL_MINUTES;
 
-        List<Scorer.Opportunity> shown = new ArrayList<>(engine.byCoins());
+        List<Scorer.Opportunity> shown = new ArrayList<>(engine.profitVariant(0));
         shown.addAll(engine.byXp());
         for (var r : engine.recommended()) shown.add(r.opportunity());
         if (shown.isEmpty()) return;

@@ -62,27 +62,67 @@ public class FusionCategory {
     // ==================================================================
     // Per-table accessors, so rendering stays index-driven.
 
+    /**
+     * Table index space: 0 Recommended, 1-4 the four Profit Shards variants
+     * ({@link FusionTablesCategory#profit1} through {@code profit4}), 5 XP
+     * per fuse - not 0/1/2 the way this used to be, now that Profit Shards is
+     * four independently-configured tables instead of one.
+     */
     public boolean tableShown(int t) {
         return switch (t) {
-            case 1 -> tables.profitShards.show;
-            case 2 -> tables.xpTable.show;
+            case 1 -> tables.profit1.show;
+            case 2 -> tables.profit2.show;
+            case 3 -> tables.profit3.show;
+            case 4 -> tables.profit4.show;
+            case 5 -> tables.xpTable.show;
             default -> tables.recommended.show;
         };
     }
 
     public int rows(int t) {
         return switch (t) {
-            case 1 -> tables.profitShards.rows;
-            case 2 -> tables.xpTable.rows;
+            case 1 -> tables.profit1.rows;
+            case 2 -> tables.profit2.rows;
+            case 3 -> tables.profit3.rows;
+            case 4 -> tables.profit4.rows;
+            case 5 -> tables.xpTable.rows;
             default -> tables.recommended.rows;
         };
     }
 
     public boolean multiStep(int t) {
         return switch (t) {
-            case 1 -> tables.profitShards.multiStep;
-            case 2 -> tables.xpTable.multiStep;
+            case 1 -> tables.profit1.multiStep;
+            case 2 -> tables.profit2.multiStep;
+            case 3 -> tables.profit3.multiStep;
+            case 4 -> tables.profit4.multiStep;
+            case 5 -> tables.xpTable.multiStep;
             default -> tables.recommended.multiStep;
+        };
+    }
+
+    /**
+     * Buy/sell mode for one of the four Profit Shards tables, read by {@code
+     * SquidUtils} to derive that table's own {@code Scorer.Settings} via
+     * {@code Settings#withMode}. {@code variant} is 1-4, matching {@link
+     * #tableShown} et al.'s table-index numbering for those slots, not a
+     * separate 0-based index.
+     */
+    public int profitVariantBuyMode(int variant) {
+        return switch (variant) {
+            case 2 -> tables.profit2.buyMode;
+            case 3 -> tables.profit3.buyMode;
+            case 4 -> tables.profit4.buyMode;
+            default -> tables.profit1.buyMode;
+        };
+    }
+
+    public int profitVariantSellMode(int variant) {
+        return switch (variant) {
+            case 2 -> tables.profit2.sellMode;
+            case 3 -> tables.profit3.sellMode;
+            case 4 -> tables.profit4.sellMode;
+            default -> tables.profit1.sellMode;
         };
     }
 
@@ -95,14 +135,15 @@ public class FusionCategory {
         return graphs.graphWindow;
     }
 
+    /**
+     * The four Profit Shards tables (1-4) have no graphs of their own - see
+     * the class doc on {@code FusionTablesCategory.ProfitVariant} for why -
+     * so every graph index in that range is simply off.
+     */
     public boolean graphOn(int t, int g) {
         return switch (t) {
-            case 1 -> switch (g) {
-                case 1 -> graphs.profitShards.demandGraph;
-                case 2 -> graphs.profitShards.xpGraph;
-                default -> graphs.profitShards.profitGraph;
-            };
-            case 2 -> switch (g) {
+            case 1, 2, 3, 4 -> false;
+            case 5 -> switch (g) {
                 case 1 -> graphs.xpTable.demandGraph;
                 case 2 -> graphs.xpTable.xpGraph;
                 default -> graphs.xpTable.profitGraph;
@@ -122,7 +163,7 @@ public class FusionCategory {
 
     public int maxRows() {
         int m = 3;
-        for (int t = 0; t < 3; t++) m = Math.max(m, rows(t));
+        for (int t = 0; t < 6; t++) m = Math.max(m, rows(t));
         return m;
     }
 
