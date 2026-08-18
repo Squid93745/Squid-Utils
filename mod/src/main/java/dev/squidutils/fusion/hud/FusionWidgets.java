@@ -263,8 +263,8 @@ public final class FusionWidgets {
         // whether the list currently has anything in it. Hiding an empty
         // panel would also hide it from the overlay editor, and then there
         // would be no way to position it before you have added anything.
-        if (which.isShoppingList()) return cfg.fusion.general.shoppingListShow;
-        if (which.isFuseOrder()) return cfg.fusion.general.fuseOrderShow;
+        if (which.isShoppingList()) return cfg.fusion.shoppingListShow;
+        if (which.isFuseOrder()) return cfg.fusion.fuseOrderShow;
         if (!cfg.fusion.tableShown(which.table)) return false;   // graphs follow their table
         return !which.isGraph() || cfg.fusion.graphOn(which.table, which.graph);
     }
@@ -748,26 +748,33 @@ public final class FusionWidgets {
      *  row count - {@link #buildRows} needs the untrimmed list so a
      *  multi-step row filtered back out for no longer clearing the profit
      *  minimum can be backfilled from further down, rather than just
-     *  shrinking the table. */
-    private static List<Scorer.Opportunity> fullSourceFor(FusionEngine engine, int t) {
+     *  shrinking the table.
+     *
+     *  <p>Takes an already-captured {@link FusionEngine.Snapshot} rather
+     *  than the engine itself, so a caller building several things from the
+     *  same table (this list and, say, {@link #rowData}'s route costs) reads
+     *  them off one consistent refresh cycle instead of each call
+     *  independently picking whichever cycle happens to be current at that
+     *  exact instant - see the class doc on {@link FusionEngine.Snapshot}. */
+    private static List<Scorer.Opportunity> fullSourceFor(FusionEngine.Snapshot snap, int t) {
         return switch (t) {
-            case 1, 2, 3, 4 -> engine.profitVariant(t - 1);
-            case 5 -> engine.byXp();
-            default -> recommendedOps(engine);
+            case 1, 2, 3, 4 -> snap.profitVariants().get(t - 1);
+            case 5 -> snap.byXp();
+            default -> recommendedOps(snap);
         };
     }
 
     /** Shards shown by one table, trimmed to its own row count - for the
      *  graphs, which plot exactly what the table shows. */
     private static List<Scorer.Opportunity> rowsOf(FusionEngine engine, SquidUtilsConfig cfg, int t) {
-        List<Scorer.Opportunity> src = fullSourceFor(engine, t);
+        List<Scorer.Opportunity> src = fullSourceFor(engine.snapshot(), t);
         int n = Math.min(cfg.fusion.rows(t), src.size());
         return src.subList(0, Math.max(0, n));
     }
 
-    private static List<Scorer.Opportunity> recommendedOps(FusionEngine engine) {
+    private static List<Scorer.Opportunity> recommendedOps(FusionEngine.Snapshot snap) {
         List<Scorer.Opportunity> out = new ArrayList<>();
-        for (Recommender.Scored s : engine.recommended()) out.add(s.opportunity());
+        for (Recommender.Scored s : snap.recommended()) out.add(s.opportunity());
         return out;
     }
 
@@ -948,9 +955,10 @@ public final class FusionWidgets {
      * @return the real total, or -1 if this table's own settings cannot fill
      *         every leg of the route right now.
      */
-    private static double liveRouteCost(FusionEngine engine, Scorer.Settings settings, RouteSolver.Route route) {
+    private static double liveRouteCost(FusionEngine engine, FusionEngine.Snapshot snap,
+                                        Scorer.Settings settings, RouteSolver.Route route) {
         var products = engine.products();
-        var brain = engine.brain();
+        var brain = snap.brain();
         var data = engine.data();
         double total = 0;
         for (RouteSolver.Buy b : route.buys()) {
@@ -974,20 +982,29 @@ public final class FusionWidgets {
      * numbers rather than showing a nonsensical "0 steps". The route's own
      * settings can also simply fail to fill right now ({@link
      * #liveRouteCost} returning -1) - same fallback, for the same reason.
+     *
+     * <p>{@code snap} is one table-render's single captured {@link
+     * FusionEngine.Snapshot} (see {@link #buildRows}), not a fresh {@code
+     * engine.routeCosts()} call per row - a table can have dozens of rows,
+     * each doing real order-book math, and a background refresh completing
+     * midway through that loop used to mean the rows before it and the rows
+     * after it were each individually correct but computed under two
+     * different refresh cycles' costs, which is exactly the shape of a row
+     * disagreeing with its neighbours for no visible reason.
      */
-    private static RowData rowData(SquidUtilsConfig cfg, FusionEngine engine, int t,
+    private static RowData rowData(SquidUtilsConfig cfg, FusionEngine engine, FusionEngine.Snapshot snap, int t,
                                    Scorer.Opportunity o, double fit) {
         double cost = o.cost(), profit = o.profit(), roi = o.roi();
         int rootRecipe = -1, steps = 0;
 
         if (cfg.fusion.multiStep(t)) {
-            var costs = engine.routeCosts();
+            var costs = snap.routeCosts();
             var data = engine.data();
             int shardIndex = costs == null ? -1 : data.indexOfTag(o.resultTag());
             int via = shardIndex >= 0 ? costs.via()[shardIndex] : RouteSolver.BUY;
             if (via != RouteSolver.BUY) {
                 var route = RouteSolver.explain(data, costs, via);
-                double routeCost = liveRouteCost(engine, settingsFor(engine, t), route);
+                double routeCost = liveRouteCost(engine, snap, settingsFor(engine, t), route);
                 if (routeCost >= 0) {
                     double revenue = o.profit() + o.cost();   // recover sell-side revenue
                     cost = routeCost;
@@ -1012,21 +1029,29 @@ public final class FusionWidgets {
      * skipped and backfilled from further down - the table still ends up
      * with the row count you asked for instead of quietly showing fewer,
      * and never shows a fusion its own numbers say is not worth doing.
+     *
+     * <p>Captures one {@link FusionEngine.Snapshot} up front and threads it
+     * through every row - see {@link #rowData}'s doc for why that matters:
+     * without it, each row's own {@code routeCosts} lookup could land on
+     * whichever refresh cycle happened to be current at that row's specific
+     * moment in the loop, not necessarily the same one the row list itself
+     * (and every other row) was built from.
      */
     private static List<Row> buildRows(SquidUtilsConfig cfg, FusionEngine engine, int t, List<Column> columns) {
-        List<Scorer.Opportunity> src = fullSourceFor(engine, t);
+        FusionEngine.Snapshot snap = engine.snapshot();
+        List<Scorer.Opportunity> src = fullSourceFor(snap, t);
         int wanted = cfg.fusion.rows(t);
         double minProfit = FusionCategory.parseNumber(
                 cfg.fusion.settings.filters.minProfitPerFuse, 1000);
 
         boolean rec = t == 0;
-        List<Recommender.Scored> scored = rec ? engine.recommended() : List.of();
+        List<Recommender.Scored> scored = rec ? snap.recommended() : List.of();
 
         List<Row> rows = new ArrayList<>(Math.min(wanted, src.size()));
         for (int i = 0; i < src.size() && rows.size() < wanted; i++) {
             Scorer.Opportunity o = src.get(i);
             double fit = (rec && i < scored.size()) ? scored.get(i).score() : 0;
-            RowData d = rowData(cfg, engine, t, o, fit);
+            RowData d = rowData(cfg, engine, snap, t, o, fit);
             if (d.profit() < minProfit) continue;
 
             List<Cell> cells = new ArrayList<>(columns.size());
@@ -1192,8 +1217,8 @@ public final class FusionWidgets {
         List<Cell> legend = new ArrayList<>(columns.size());
         for (Column c : columns) legend.add(new Cell(c.legend(), c.colour()));
 
-        boolean compact = cfg.fusion.general.compact;
-        boolean showLegend = cfg.fusion.general.showLegend && !legend.isEmpty();
+        boolean compact = cfg.fusion.compact;
+        boolean showLegend = cfg.fusion.showLegend && !legend.isEmpty();
         int lineH = font.lineHeight + 1;
         int[] colX = columnOffsets(font, rows, legend);
 

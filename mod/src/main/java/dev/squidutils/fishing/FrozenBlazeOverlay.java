@@ -62,7 +62,7 @@ public final class FrozenBlazeOverlay {
             return;
         }
         SquidUtilsConfig cfg = SquidUtils.config();
-        if (cfg == null || !cfg.fishing.general.enabled || !cfg.fishing.frozenBlaze.enabled
+        if (cfg == null || !cfg.fishing.enabled || !cfg.fishing.frozenBlaze.enabled
                 || !wearingFullSet(mc.player)) {
             reset();
             return;
@@ -160,7 +160,7 @@ public final class FrozenBlazeOverlay {
     public static void render(GuiGraphicsExtractor g, DeltaTracker delta) {
         SquidUtilsConfig cfg = SquidUtils.config();
         if (cfg == null || !cfg.general.showHud
-                || !cfg.fishing.general.enabled || !cfg.fishing.frozenBlaze.enabled) {
+                || !cfg.fishing.enabled || !cfg.fishing.frozenBlaze.enabled) {
             return;
         }
         float t = progress();

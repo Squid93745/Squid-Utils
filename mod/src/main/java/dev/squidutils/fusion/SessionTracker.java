@@ -507,7 +507,7 @@ public final class SessionTracker {
         double base = dev.squidutils.fusion.engine.Scorer.huntingXp(rarity);
         if (base <= 0) return;
         var cfg = SquidUtils.config();
-        float wisdom = cfg != null ? cfg.fusion.general.huntingWisdom : 0f;
+        float wisdom = cfg != null ? cfg.fusion.huntingWisdom : 0f;
         double estimate = base * (1 + wisdom / 100.0);
 
         start();
@@ -607,7 +607,7 @@ public final class SessionTracker {
      */
     private void reverseEngineerWisdom(String rarity, double gainedXp) {
         var cfg = SquidUtils.config();
-        if (cfg == null || !cfg.fusion.general.autoDetectWisdom) return;
+        if (cfg == null || !cfg.fusion.autoDetectWisdom) return;
 
         double base = dev.squidutils.fusion.engine.Scorer.huntingXp(rarity);
         if (base <= 0) return;
@@ -622,10 +622,10 @@ public final class SessionTracker {
         if (wisdom < -5 || wisdom > 10_000) return;
         wisdom = Math.max(0, wisdom);
 
-        float current = cfg.fusion.general.huntingWisdom;
+        float current = cfg.fusion.huntingWisdom;
         if (Math.abs(current - wisdom) < 0.05) return;   // already correct
 
-        cfg.fusion.general.huntingWisdom = (float) wisdom;
+        cfg.fusion.huntingWisdom = (float) wisdom;
         var managed = SquidUtils.managedConfig();
         if (managed != null) managed.saveToFile();
 

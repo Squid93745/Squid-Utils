@@ -2,7 +2,9 @@ package dev.squidutils.hud;
 
 import dev.squidutils.SquidUtils;
 import dev.squidutils.fusion.data.FusionData;
+import dev.squidutils.fusion.engine.FusionEngine;
 import dev.squidutils.fusion.engine.RouteSolver;
+import dev.squidutils.fusion.engine.Scorer;
 import dev.squidutils.fusion.hud.ShardIcons;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.screens.Screen;
@@ -31,6 +33,10 @@ import java.util.List;
 public class MultiStepScreen extends Screen {
 
     private static final int[] MULTIPLIERS = {1, 8, 16, 32, 64};
+    /** Ceiling on what "Max" will ever pick, so a leg with no real
+     *  depth-limit risk (a resting buy order, or every leg unconstrained)
+     *  still lands on a sane number instead of an effectively-infinite one. */
+    private static final int MAX_SAFE_MULTIPLIER = 999;
     private static final int ICON = 10;
     private static final int PAD = 20;
 
@@ -89,7 +95,7 @@ public class MultiStepScreen extends Screen {
         int lineH = font.lineHeight + 3;
 
         String titleText = qty + "x " + result.name() + "  (" + Draw.coins(total) + ")";
-        String multRowText = "Buy for:  1x  8x  16x  32x  64x  ";
+        String multRowText = "Buy for:  1x  8x  16x  32x  64x  Max  ";
         String helpText = "Click a name for the bazaar, again to fill an order sign  ·  Esc to close";
 
         // Measure first, so the panel fits its own content instead of a
@@ -122,8 +128,10 @@ public class MultiStepScreen extends Screen {
 
         // Quantity presets scale every number below at once, the same idea as
         // holding a number key to pick a stack size - useful when stocking up
-        // rather than doing the fusion exactly once.
-        y = drawMultiplierRow(g, contentX, y);
+        // rather than doing the fusion exactly once. "Max" is a fifth, dynamic
+        // preset alongside the fixed ones - see safeMaxMultiplier().
+        int safeMax = safeMaxMultiplier(engine, data, costs, rootRecipe);
+        y = drawMultiplierRow(g, contentX, y, safeMax);
         y += 6;
         y = drawActionRow(g, contentX, y, route);
         y += 10;
@@ -153,7 +161,7 @@ public class MultiStepScreen extends Screen {
         }
     }
 
-    private int drawMultiplierRow(GuiGraphicsExtractor g, int x, int y) {
+    private int drawMultiplierRow(GuiGraphicsExtractor g, int x, int y, int safeMax) {
         String label = "Buy for: ";
         g.text(font, label, x, y, Draw.DIM);
         x += font.width(label) + 4;
@@ -167,7 +175,60 @@ public class MultiStepScreen extends Screen {
             buttons.add(new Button(x, y - 1, w, font.lineHeight + 2, () -> multiplier = m));
             x += w + 4;
         }
+
+        // A fifth, dynamic preset: however many crafts' worth of raw shards
+        // the order book can actually absorb right now without the average
+        // price paid sliding past Settings.depthLimitThreshold - the same
+        // safety margin the shopping list panel's own [batch] button clamps
+        // an over-budget line down to, just picked proactively here instead
+        // of reactively after the fact. Coloured like the "batch" table
+        // column (Draw.C_BATCH) rather than the fixed presets' purple, since
+        // it is not a fixed quantity the way they are.
+        String maxText = "Max";
+        int maxW = font.width(maxText) + 6;
+        boolean maxActive = multiplier == safeMax;
+        g.fill(x, y - 1, x + maxW, y + font.lineHeight + 1, maxActive ? 0x806BE8C8 : 0x306BE8C8);
+        g.text(font, maxText, x + 3, y, maxActive ? 0xFFFFFFFF : Draw.C_BATCH);
+        buttons.add(new Button(x, y - 1, maxW, font.lineHeight + 2, () -> multiplier = safeMax));
+
         return y + font.lineHeight + 2;
+    }
+
+    /**
+     * The largest multiplier such that every raw shard this route needs to
+     * buy stays within its own {@link Scorer#buyDepthLimit} - "Max"'s whole
+     * point, so clicking it (then "Add to shopping list") queues exactly as
+     * much as the book can absorb right now without walking deep enough into
+     * it to pay noticeably worse prices, instead of a fixed preset that might
+     * be too much and only warn about it after the fact.
+     *
+     * <p>Solved from the multiplier-1 route rather than whichever multiplier
+     * is currently selected, so picking a different preset first does not
+     * change what "Max" itself resolves to. A leg with no real depth-limit
+     * risk - a resting buy order, or a shard with no live price at all -
+     * reports {@link Long#MAX_VALUE} from {@code buyDepthLimit} and so never
+     * constrains the result, the same convention the shopping list panel's
+     * own batch clamp already uses for an unpriced product.
+     */
+    private static int safeMaxMultiplier(FusionEngine engine, FusionData data, RouteSolver.Costs costs,
+                                          int rootRecipe) {
+        Scorer.Settings cfg = engine.currentSettings();
+        var products = engine.products();
+        var brain = engine.brain();
+        var base = RouteSolver.explain(data, costs, rootRecipe, 1);
+
+        long max = MAX_SAFE_MULTIPLIER;
+        for (var buy : base.buys()) {
+            if (buy.units() <= 0) continue;
+            var s = data.shard(buy.shardIndex());
+            var product = products.get(s.tag());
+            long safe = product != null
+                    ? Scorer.buyDepthLimit(product, cfg, brain.reference(s.tag()))
+                    : Long.MAX_VALUE;
+            if (safe == Long.MAX_VALUE) continue;
+            max = Math.min(max, safe / buy.units());
+        }
+        return (int) Math.max(1, Math.min(max, MAX_SAFE_MULTIPLIER));
     }
 
     /** Adding is the only action left here - viewing the list is now the

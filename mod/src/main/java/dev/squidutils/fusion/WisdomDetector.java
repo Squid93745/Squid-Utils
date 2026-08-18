@@ -65,7 +65,7 @@ public final class WisdomDetector {
     public static void tick(Minecraft mc) {
         if (mc == null || mc.player == null) return;
         SquidUtilsConfig cfg = SquidUtils.config();
-        if (cfg == null || !cfg.fusion.general.autoDetectWisdom) return;
+        if (cfg == null || !cfg.fusion.autoDetectWisdom) return;
         if (++ticks < TICK_INTERVAL) return;
         ticks = 0;
 
@@ -128,7 +128,7 @@ public final class WisdomDetector {
     private static boolean apply(SquidUtilsConfig cfg, Minecraft mc, float value) {
         if (value < 0 || value > 10_000) return false;
 
-        boolean changed = Math.abs(cfg.fusion.general.huntingWisdom - value) >= 0.01f;
+        boolean changed = Math.abs(cfg.fusion.huntingWisdom - value) >= 0.01f;
         boolean firstSight = lastSeen < 0;
         lastSeen = value;
 
@@ -137,8 +137,8 @@ public final class WisdomDetector {
         if (changed) announcedThisSession = false;
 
         if (changed) {
-            float previous = cfg.fusion.general.huntingWisdom;
-            cfg.fusion.general.huntingWisdom = value;
+            float previous = cfg.fusion.huntingWisdom;
+            cfg.fusion.huntingWisdom = value;
             var managed = SquidUtils.managedConfig();
             if (managed != null) managed.saveToFile();
             SquidUtils.LOG.info("[squidutils] hunting wisdom {} -> {} (read from stats menu)",

@@ -426,6 +426,18 @@ public class SquidUtils implements ClientModInitializer {
                 changed = true;
             }
 
+            // 0.3.x: "Shard Fusion" and "Fishing" each dropped their nested
+            // "General" sub-page - master switches and shared display now
+            // render straight on the parent category's own page instead (see
+            // FusionCategory's class doc for why MoulConfig allows that), so
+            // e.g. fusion.general.huntingWisdom needs to land on
+            // fusion.huntingWisdom, the shape FusionCategory now expects,
+            // rather than Gson silently dropping a detected Wisdom value or a
+            // player's shopping-list/legend toggles on the rename.
+            if (fusion != null) changed |= hoistIntoParent(fusion, "general");
+            com.google.gson.JsonObject fishing = childObject(root, "fishing");
+            if (fishing != null) changed |= hoistIntoParent(fishing, "general");
+
             com.google.gson.JsonObject general = childObject(root, "general");
             // Table index space grew from 3 slots (Recommended, Profit
             // Shards, XP) to 6 (Recommended, Profit Shards 1-4, XP) in the
@@ -452,6 +464,25 @@ public class SquidUtils implements ClientModInitializer {
     private static com.google.gson.JsonObject childObject(com.google.gson.JsonObject parent, String key) {
         return parent != null && parent.has(key) && parent.get(key).isJsonObject()
                 ? parent.getAsJsonObject(key) : null;
+    }
+
+    /**
+     * Merges every field of {@code parent.<childKey>} directly into {@code
+     * parent}, then removes the now-empty wrapper - for a nested sub-category
+     * whose options moved onto its parent's own page. {@code parent} already
+     * having a same-named field wins (should never happen from a real
+     * config.json, since the two shapes are mutually exclusive, but it means
+     * a second migration run on an already-migrated file cannot clobber
+     * anything).
+     */
+    private static boolean hoistIntoParent(com.google.gson.JsonObject parent, String childKey) {
+        com.google.gson.JsonObject child = childObject(parent, childKey);
+        if (child == null) return false;
+        for (var entry : new java.util.ArrayList<>(child.entrySet())) {
+            if (!parent.has(entry.getKey())) parent.add(entry.getKey(), entry.getValue());
+        }
+        parent.remove(childKey);
+        return true;
     }
 
     private static boolean migrateTableSlots(com.google.gson.JsonObject general, String key) {
@@ -515,7 +546,7 @@ public class SquidUtils implements ClientModInitializer {
                 // Each table sorts itself now, so the scorer's own ranking mode
                 // is no longer what decides order.
                 false,
-                c.fusion.general.huntingWisdom,
+                c.fusion.huntingWisdom,
                 c.fusion.settings.trading.depthLimitThreshold);
     }
 

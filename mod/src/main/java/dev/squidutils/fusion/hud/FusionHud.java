@@ -136,7 +136,7 @@ public final class FusionHud implements HudElement {
 
     private void drawAll(GuiGraphicsExtractor g, Minecraft mc, boolean dimmed, int mouseX, int mouseY) {
         SquidUtilsConfig cfg = config.get();
-        if (cfg == null || !cfg.general.showHud || !cfg.fusion.general.enabled) return;
+        if (cfg == null || !cfg.general.showHud || !cfg.fusion.enabled) return;
         Font font = mc.font;
         if (font == null) return;
 

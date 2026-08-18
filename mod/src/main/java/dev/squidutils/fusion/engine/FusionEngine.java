@@ -26,11 +26,49 @@ import java.util.function.Supplier;
  * Owns the data, the refresh loop, and the current rankings.
  *
  * <p>All network and scoring work happens on a single daemon thread; the render
- * thread only ever reads the {@code volatile} result lists ({@link #profitVariant},
- * {@link #byXp()}, {@link #recommended()}), each swapped atomically. A
+ * thread only ever reads {@link #snapshot}, swapped atomically. A
  * 135,000-recipe rescore has no business happening during a frame.
+ *
+ * <p>Every field one refresh cycle produces - {@code routeCosts}, {@code
+ * profitVariants}, {@code byXp}, {@code recommended}, and the rest - used to
+ * be its own separate {@code volatile} field, individually swapped in
+ * sequence as {@link #refresh} computed each one. Each swap was itself
+ * atomic, but the set of them was not: {@code refresh} takes real wall-clock
+ * time (a bazaar fetch, then scoring on the order of 135,000 recipes), so a
+ * render frame landing partway through it could read, say, a brand new
+ * {@code routeCosts} alongside a still-old {@code profitVariants} - two
+ * numbers each individually correct for a different point in time, combined
+ * into a row that corresponds to neither. That is a real, if intermittent,
+ * way for one table row to disagree with its neighbours the way a live
+ * report once described - confirmed by inspection here, not reproduced on
+ * demand, which is exactly what a race with a multi-frame window looks like.
+ * Bundling everything into one {@link Snapshot}, built up from local
+ * variables and published with a single volatile write only once it is
+ * complete, closes that window entirely: any read of {@link #snapshot} sees
+ * every field as of the same instant, never a mix of two refresh cycles.
  */
 public final class FusionEngine {
+
+    /**
+     * Everything one refresh cycle produces, published together - see the
+     * class doc for why this replaced one {@code volatile} field per
+     * component. {@code public} so a caller that reads more than one field
+     * for the same logical operation (a table's own row-building, say) can
+     * capture this once via {@link #snapshot()} and stay internally
+     * consistent for the whole operation, rather than calling {@link
+     * #routeCosts()}/{@link #profitVariant}/etc. separately and risking a
+     * refresh landing in between two of those calls.
+     */
+    public record Snapshot(
+            Brain brain,
+            RouteSolver.Costs routeCosts,
+            RouteSolver.Costs directCosts,
+            double[] buyCosts,
+            List<List<Scorer.Opportunity>> profitVariants,
+            List<Scorer.Opportunity> byXp,
+            List<Recommender.Scored> recommended,
+            long lastRefresh,
+            String status) {}
 
     /** One sample of a fusion, for the history graphs and the stability rating. */
     public record Point(long epochSeconds, double coinsPerHour, double xpPerHour,
@@ -55,20 +93,12 @@ public final class FusionEngine {
     private final Supplier<Scorer.Settings[]> profitVariantSettings;
     private final Supplier<Integer> topN;
 
-    private volatile Brain brain;
-    private volatile RouteSolver.Costs routeCosts;
-    private volatile RouteSolver.Costs directCosts;
-    private volatile double[] buyCosts;
-    // Index 0-3, matching FusionCategory's Profit Shards variants 1-4 - one
-    // scored+sorted list per table, each under its own configured buy/sell
-    // mode. Variant 0 (the default Instabuy/Sell-offer combination) is also
-    // the one that feeds history/stability - see record() below.
-    private volatile List<List<Scorer.Opportunity>> profitVariants =
-            List.of(List.of(), List.of(), List.of(), List.of());
-    private volatile List<Scorer.Opportunity> byXp = List.of();
-    private volatile List<Recommender.Scored> recommended = List.of();
-    private volatile long lastRefresh = 0L;
-    private volatile String status = "starting";
+    // Index 0-3 of Snapshot.profitVariants, matching FusionCategory's Profit
+    // Shards variants 1-4 - one scored+sorted list per table, each under its
+    // own configured buy/sell mode. Variant 0 (the default Instabuy/Sell-offer
+    // combination) is also the one that feeds history/stability - see
+    // record() below.
+    private volatile Snapshot snapshot;
 
     /** Keyed by result tag so a shard's line survives re-ranking. */
     private final java.util.Map<String, Deque<Point>> history = new java.util.HashMap<>();
@@ -80,7 +110,9 @@ public final class FusionEngine {
         this.settings = settings;
         this.profitVariantSettings = profitVariantSettings;
         this.topN = topN;
-        this.brain = Brain.loadOrEmpty(brainPath);
+        this.snapshot = new Snapshot(Brain.loadOrEmpty(brainPath), null, null, null,
+                List.of(List.of(), List.of(), List.of(), List.of()), List.of(), List.of(),
+                0L, "starting");
     }
 
     public static FusionData loadBundled(InputStream in) {
@@ -120,47 +152,52 @@ public final class FusionEngine {
     }
 
     private void refresh() {
+        Snapshot prior = snapshot;
         try {
             // Re-read the brain each cycle so a re-tune from the Python lab
-            // lands without restarting the game.
+            // lands without restarting the game. Local only - not published
+            // until the very end, alongside everything computed from it, so
+            // a reader never sees this cycle's brain paired with a previous
+            // cycle's routeCosts or vice versa.
             Brain fresh = Brain.loadOrEmpty(brainPath);
-            if (fresh.hasReferences() || !brain.hasReferences()) {
-                brain = fresh;
-            }
+            Brain brainNow = fresh.hasReferences() || !prior.brain().hasReferences() ? fresh : prior.brain();
 
             Set<String> tags = new HashSet<>();
             for (var s : data.shards()) tags.add(s.tag());
 
             if (!bazaar.refresh(tags)) {
-                status = "bazaar error: " + bazaar.lastError();
+                // Bazaar-fetch failure: still worth surfacing the brain
+                // re-read (if any) and the error, but every other field
+                // stays exactly what it was - there is nothing new to
+                // publish for them, and clearing them would replace last
+                // cycle's real data with nothing rather than leaving it be.
+                publish(prior, brainNow, "bazaar error: " + bazaar.lastError());
                 return;
             }
 
             int hour = ZonedDateTime.now(ZoneOffset.UTC).getHour();
             Scorer.Settings cfg = settings.get();
-            var all = Scorer.evaluate(data, bazaar.products(), brain, cfg, hour);
+            var all = Scorer.evaluate(data, bazaar.products(), brainNow, cfg, hour);
             int n = Math.max(1, topN.get());
 
             // Cheapest buy-or-fuse route per shard, for multi-step table rows
             // and the "include multi-step routes" tooltip line. Same cost per
             // rescore as one more Scorer.evaluate() pass; cheap next to the
             // order-book work evaluate() already does per recipe.
-            Brain brainNow = brain;
             java.util.function.IntToDoubleFunction unitBuyCost = i -> Scorer.unitBuyCost(
                     bazaar.products().get(data.shard(i).tag()), cfg,
                     brainNow.reference(data.shard(i).tag()));
-            routeCosts = RouteSolver.solve(data, unitBuyCost);
+            RouteSolver.Costs routeCosts = RouteSolver.solve(data, unitBuyCost);
             // The plain "cheapest fusion" tooltip line, before that toggle -
             // one honest hop, not the recursively-optimal chain above.
-            directCosts = RouteSolver.directCheapest(data, unitBuyCost);
+            RouteSolver.Costs directCosts = RouteSolver.directCheapest(data, unitBuyCost);
             // The shard's own buy price alone, with no fusion mixed in - the
             // "show cheapest price" tooltip mode needs this on its own to
             // compare against a one-hop fusion recipe; routeCosts already
             // folds it in for the recursive case, but discards it once a
             // fusion beats it, so it cannot be recovered from there.
-            double[] buy = new double[data.shardCount()];
-            for (int i = 0; i < buy.length; i++) buy[i] = unitBuyCost.applyAsDouble(i);
-            buyCosts = buy;
+            double[] buyCosts = new double[data.shardCount()];
+            for (int i = 0; i < buyCosts.length; i++) buyCosts[i] = unitBuyCost.applyAsDouble(i);
 
             // Profit Shards: up to four independently-configured trading-mode
             // variants, each ranked by margin multiplied by how fast the
@@ -172,18 +209,17 @@ public final class FusionEngine {
             // scoring the identical thing twice; the base evaluation above is
             // reused outright when a variant happens to match it exactly.
             Map<Scorer.Settings, List<Scorer.Opportunity>> byVariantSettings = new HashMap<>();
-            List<List<Scorer.Opportunity>> variants = new ArrayList<>(4);
+            List<List<Scorer.Opportunity>> profitVariants = new ArrayList<>(4);
             for (Scorer.Settings vs : profitVariantSettings.get()) {
-                variants.add(byVariantSettings.computeIfAbsent(vs, key -> {
+                profitVariants.add(byVariantSettings.computeIfAbsent(vs, key -> {
                     var evaluated = key.equals(cfg) ? all
-                            : Scorer.evaluate(data, bazaar.products(), brain, key, hour);
+                            : Scorer.evaluate(data, bazaar.products(), brainNow, key, hour);
                     var coins = new ArrayList<>(evaluated);
                     coins.sort(Comparator.comparingDouble(
                             (Scorer.Opportunity o) -> o.profit() * o.salesPerHour()).reversed());
                     return Scorer.dedupe(coins, 1, n);
                 }));
             }
-            profitVariants = variants;
 
             // XP per fuse only takes five distinct values, so on its own it
             // would leave every legendary tied in arbitrary order. Coins spent
@@ -191,26 +227,39 @@ public final class FusionEngine {
             var xp = new ArrayList<>(all);
             xp.sort(Comparator.comparingDouble(Scorer.Opportunity::xpPerFuse).reversed()
                     .thenComparing(Comparator.comparingDouble(Scorer.Opportunity::xpPerCoin).reversed()));
-            byXp = Scorer.dedupe(xp, 1, n);
+            List<Scorer.Opportunity> byXp = Scorer.dedupe(xp, 1, n);
 
-            recommended = Recommender.rank(all, n);
+            List<Recommender.Scored> recommended = Recommender.rank(all, n);
 
-            lastRefresh = System.currentTimeMillis();
-            status = all.size() + " viable";
+            Snapshot next = new Snapshot(brainNow, routeCosts, directCosts, buyCosts,
+                    profitVariants, byXp, recommended,
+                    System.currentTimeMillis(), all.size() + " viable");
+            // Published only now, as one atomic swap, once every field above
+            // has finished computing - see the class doc.
+            snapshot = next;
 
             // Record every shard on show, so a graph line exists for whichever
             // table the player actually has open. Only the first Profit
             // Shards variant feeds this - see the field doc on profitVariants
             // for why the other three do not need their own history.
-            List<Scorer.Opportunity> shown = new ArrayList<>(variants.get(0));
+            List<Scorer.Opportunity> shown = new ArrayList<>(profitVariants.get(0));
             shown.addAll(byXp);
             for (var r : recommended) shown.add(r.opportunity());
             record(shown);
 
             if (backfill != null) backfill.run();
         } catch (Exception e) {
-            status = "error: " + e.getClass().getSimpleName();
+            publish(prior, prior.brain(), "error: " + e.getClass().getSimpleName());
         }
+    }
+
+    /** Publishes a snapshot that keeps every field from {@code base} except
+     *  {@code brain} and {@code status} - the shared tail of the two error
+     *  paths above, neither of which has anything new to report for the
+     *  rest of the engine's state. */
+    private void publish(Snapshot base, Brain brainNow, String status) {
+        snapshot = new Snapshot(brainNow, base.routeCosts(), base.directCosts(), base.buyCosts(),
+                base.profitVariants(), base.byXp(), base.recommended(), base.lastRefresh(), status);
     }
 
     private synchronized void record(List<Scorer.Opportunity> top) {
@@ -306,9 +355,21 @@ public final class FusionEngine {
 
     public void setBackfill(Runnable backfill) { this.backfill = backfill; }
 
+    /**
+     * The whole result of the last completed refresh, as one consistent
+     * unit - see the class doc. Prefer this over the individual accessors
+     * below for any operation that reads more than one of their fields (a
+     * table's rows, say, which need both {@link Snapshot#routeCosts()} and
+     * {@link Snapshot#profitVariants()} to agree on the same cycle): capture
+     * it once at the top of that operation and read every field from the
+     * one instance, rather than calling two separate accessors that could
+     * each, individually, land on either side of the next refresh.
+     */
+    public Snapshot snapshot() { return snapshot; }
+
     /** One of the four Profit Shards tables' scored+sorted rows. {@code index} is
      *  0-3, matching config's variants 1-4. */
-    public List<Scorer.Opportunity> profitVariant(int index) { return profitVariants.get(index); }
+    public List<Scorer.Opportunity> profitVariant(int index) { return snapshot.profitVariants().get(index); }
 
     /** The exact Settings one of the four Profit Shards tables was scored
      *  under - fetched fresh, not cached, so a caller recomputing something
@@ -316,9 +377,9 @@ public final class FusionEngine {
      *  same trading assumptions {@link #profitVariant} already used, instead
      *  of silently mixing this table's numbers with the global settings'. */
     public Scorer.Settings variantSettings(int index) { return profitVariantSettings.get()[index]; }
-    public List<Scorer.Opportunity> byXp() { return byXp; }
-    public List<Recommender.Scored> recommended() { return recommended; }
-    public long lastRefresh() { return lastRefresh; }
+    public List<Scorer.Opportunity> byXp() { return snapshot.byXp(); }
+    public List<Recommender.Scored> recommended() { return snapshot.recommended(); }
+    public long lastRefresh() { return snapshot.lastRefresh(); }
     /** Hypixel's own {@code lastUpdated} on the bazaar reply, not the local
      *  clock time we happened to poll at - see {@link BazaarClient#lastUpdated()}.
      *  Hypixel's backend only advances this every so often regardless of how
@@ -327,12 +388,12 @@ public final class FusionEngine {
      *  snapshot (not the same cached reply read twice) should compare this,
      *  not {@link #lastRefresh()}. */
     public long bazaarSnapshotTime() { return bazaar.lastUpdated(); }
-    public String status() { return status; }
-    public Brain brain() { return brain; }
+    public String status() { return snapshot.status(); }
+    public Brain brain() { return snapshot.brain(); }
     public FusionData data() { return data; }
-    public RouteSolver.Costs routeCosts() { return routeCosts; }
-    public RouteSolver.Costs directCosts() { return directCosts; }
-    public double[] buyCosts() { return buyCosts; }
+    public RouteSolver.Costs routeCosts() { return snapshot.routeCosts(); }
+    public RouteSolver.Costs directCosts() { return snapshot.directCosts(); }
+    public double[] buyCosts() { return snapshot.buyCosts(); }
 
     /** Live bazaar prices, for callers that need a real order-book sweep at
      *  an arbitrary quantity - the shopping list and fuse order panels, via
