@@ -187,10 +187,11 @@ public final class FusionEngine {
             java.util.function.IntToDoubleFunction unitBuyCost = i -> Scorer.unitBuyCost(
                     bazaar.products().get(data.shard(i).tag()), cfg,
                     brainNow.reference(data.shard(i).tag()));
-            RouteSolver.Costs routeCosts = RouteSolver.solve(data, unitBuyCost);
+            RouteSolver.Costs routeCosts = RouteSolver.solve(data, unitBuyCost, cfg.pureReptileChance());
             // The plain "cheapest fusion" tooltip line, before that toggle -
             // one honest hop, not the recursively-optimal chain above.
-            RouteSolver.Costs directCosts = RouteSolver.directCheapest(data, unitBuyCost);
+            RouteSolver.Costs directCosts =
+                    RouteSolver.directCheapest(data, unitBuyCost, cfg.pureReptileChance());
             // The shard's own buy price alone, with no fusion mixed in - the
             // "show cheapest price" tooltip mode needs this on its own to
             // compare against a one-hop fusion recipe; routeCosts already

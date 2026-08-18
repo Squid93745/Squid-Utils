@@ -136,8 +136,12 @@ public final class OrderTracker {
 
     private static final List<Tracked> orders = new ArrayList<>();
     // A tick of noise either way is not worth flagging as "beaten" - the
-    // same tolerance Scorer's own book-impact math uses.
-    private static final double PRICE_EPSILON = 0.05;
+    // same tolerance Scorer's own book-impact math uses. Package-visible so
+    // OrderOverlay's own live re-check (of an order read straight off the
+    // Co-op Bazaar Orders screen's own lore, not this class's chat-tracked
+    // list) uses the exact same tolerance, rather than a second copy that
+    // could silently drift from it.
+    static final double PRICE_EPSILON = 0.05;
 
     // The most recent exact unit price read off an open Setup screen, paired
     // with the chat confirmation that follows a moment after the player
@@ -294,7 +298,9 @@ public final class OrderTracker {
         return true;
     }
 
-    private static String tagFor(FusionData data, String itemName) {
+    /** Package-visible so {@link OrderOverlay} can resolve the same item ->
+     *  tag mapping for an order read straight off a bazaar screen's lore. */
+    static String tagFor(FusionData data, String itemName) {
         String bare = itemName.endsWith(" Shard")
                 ? itemName.substring(0, itemName.length() - " Shard".length()) : itemName;
         for (int i = 0; i < data.shardCount(); i++) {
@@ -307,7 +313,7 @@ public final class OrderTracker {
     public static void tick(Minecraft mc) {
         if (mc == null) return;
         SquidUtilsConfig cfg = SquidUtils.config();
-        if (cfg == null || !cfg.bazaar.enabled) return;
+        if (cfg == null || !cfg.bazaar.enabled || !cfg.bazaar.orderTracker.enabled) return;
 
         // Runs regardless of whether anything is tracked yet - this is what
         // captures the exact unit price for the order about to be placed,
@@ -364,15 +370,17 @@ public final class OrderTracker {
     }
 
     private static void alert(Minecraft mc, SquidUtilsConfig cfg, Tracked o) {
-        if (cfg.bazaar.chatEnabled && mc.player != null) {
+        if (cfg.bazaar.orderTracker.chatEnabled && mc.player != null) {
             mc.player.sendSystemMessage(Component.literal("")
                     .append(Component.literal("§c§lBAZAAR §7» "))
                     .append(Component.literal("§fOrder for §6" + o.itemName + " §fis §c§loutdated§r§f!")));
         }
-        if (cfg.bazaar.sound.enabled) play(mc, cfg.bazaar.sound.id, cfg.bazaar.sound.pitch);
-        if (cfg.bazaar.splash.enabled) {
+        if (cfg.bazaar.orderTracker.sound.enabled) {
+            play(mc, cfg.bazaar.orderTracker.sound.id, cfg.bazaar.orderTracker.sound.pitch);
+        }
+        if (cfg.bazaar.orderTracker.splash.enabled) {
             OrderSplash.show("Order for " + o.itemName + " is outdated",
-                    cfg.bazaar.splash.scale, cfg.bazaar.splash.seconds);
+                    cfg.bazaar.orderTracker.splash.scale, cfg.bazaar.orderTracker.splash.seconds);
         }
     }
 
@@ -381,7 +389,7 @@ public final class OrderTracker {
         Minecraft mc = Minecraft.getInstance();
         SquidUtilsConfig cfg = SquidUtils.config();
         if (mc == null || cfg == null) return;
-        play(mc, cfg.bazaar.sound.id, cfg.bazaar.sound.pitch);
+        play(mc, cfg.bazaar.orderTracker.sound.id, cfg.bazaar.orderTracker.sound.pitch);
     }
 
     private static void play(Minecraft mc, String soundId, float pitch) {
@@ -418,7 +426,7 @@ public final class OrderTracker {
         }
     }
 
-    private static long parseLong(String s) {
+    static long parseLong(String s) {
         try {
             return Long.parseLong(s.replace(",", ""));
         } catch (NumberFormatException e) {
@@ -426,7 +434,7 @@ public final class OrderTracker {
         }
     }
 
-    private static double parseDouble(String s) {
+    static double parseDouble(String s) {
         try {
             return Double.parseDouble(s.replace(",", ""));
         } catch (NumberFormatException e) {

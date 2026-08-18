@@ -94,7 +94,7 @@ public final class ShardTooltip {
                     // BUY only loses here when some fusion genuinely beats
                     // it, so this is already the cheaper of the two.
                     fuseCost = cost;
-                    fuseLine = multiStepLine(data, routeCosts, via);
+                    fuseLine = multiStepLine(data, routeCosts, via, engine.currentSettings().pureReptileChance());
                     fuseVia = via;
                     fuseIsRoute = true;
                 } else if (Double.isFinite(cost)) {
@@ -146,7 +146,7 @@ public final class ShardTooltip {
                 int via = routeCosts.via()[idx];
                 hoveredRootRecipe = via;
                 hoveredAtMillis = System.currentTimeMillis();
-                return multiStepLine(data, routeCosts, via);
+                return multiStepLine(data, routeCosts, via, engine.currentSettings().pureReptileChance());
             }
         }
         return directLine(data, engine.directCosts(), idx);
@@ -200,9 +200,13 @@ public final class ShardTooltip {
      *  when that comes out cheaper than buying them. {@code via} is already
      *  resolved by the caller, which also needs it to arm the open-route
      *  hotkey. */
-    private static Component multiStepLine(FusionData data, RouteSolver.Costs routeCosts, int via) {
+    private static Component multiStepLine(FusionData data, RouteSolver.Costs routeCosts, int via,
+                                           double pureReptileChance) {
         var route = RouteSolver.explain(data, routeCosts, via);
-        double cost = RouteSolver.routeCost(data, routeCosts, route);
+        // Pure Reptile can proc on any Reptile-eligible tier along the
+        // route, not just via itself - see RouteSolver.reptileCredit.
+        double cost = Math.max(0, RouteSolver.routeCost(data, routeCosts, route)
+                - RouteSolver.reptileCredit(data, routeCosts, route, pureReptileChance));
         int steps = route.steps().size();
 
         if (steps <= 1) {

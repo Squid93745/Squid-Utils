@@ -28,14 +28,39 @@ public final class ShoppingList {
     private static final Map<Integer, Integer> ITEMS = new LinkedHashMap<>();
     private static final Map<Integer, Integer> STEP_CRAFTS = new LinkedHashMap<>();
 
+    /** Which recipe directly consumes each queued shard as one of its own
+     *  two inputs - see {@link #viaRecipe} for why this exists. */
+    private static final Map<Integer, Integer> VIA_RECIPE = new LinkedHashMap<>();
+
     private ShoppingList() {}
 
     public record Entry(int shardIndex, int units) {}
     public record StepEntry(int recipeIndex, int crafts) {}
 
     public static void addRoute(RouteSolver.Route route) {
+        var engine = SquidUtils.engine();
+        var data = engine != null ? engine.data() : null;
+
         for (var buy : route.buys()) {
             ITEMS.merge(buy.shardIndex(), buy.units(), Integer::sum);
+
+            // A raw buy was demanded by exactly one step's own inputA/inputB
+            // in RouteSolver's own recursive walk - findable again here by
+            // checking which step actually names it, rather than having
+            // RouteSolver carry the link forward itself. Last route to
+            // declare a shard wins if two different added routes both queue
+            // it - as good a guess as any once that happens, and no worse
+            // than the flat quantity merge above already accepts for the
+            // same reason.
+            if (data != null) {
+                for (var step : route.steps()) {
+                    int r = step.recipeIndex();
+                    if (data.inputA(r) == buy.shardIndex() || data.inputB(r) == buy.shardIndex()) {
+                        VIA_RECIPE.put(buy.shardIndex(), r);
+                        break;
+                    }
+                }
+            }
         }
         for (var step : route.steps()) {
             STEP_CRAFTS.merge(step.recipeIndex(), step.crafts(), Integer::sum);
@@ -44,6 +69,23 @@ public final class ShoppingList {
 
     public static void remove(int shardIndex) {
         ITEMS.remove(shardIndex);
+        VIA_RECIPE.remove(shardIndex);
+    }
+
+    /**
+     * The recipe that directly consumes this shard as a raw input, if the
+     * route it was added from is known - lets the batch clamp check the
+     * real fusion's profit margin instead of the shard's own price in
+     * isolation, which used to mean a shard with deep buy-side liquidity
+     * but a thin-margin or thin-selling recipe behind it reported a "safe"
+     * quantity far larger than the table's own batch column would ever
+     * allow for that same fusion. Null for a shard whose provenance is not
+     * known (added some other way, or {@link SquidUtils#engine()} was not
+     * up yet) - callers fall back to {@link
+     * dev.squidutils.fusion.engine.Scorer#buyDepthLimit} in that case.
+     */
+    public static Integer viaRecipe(int shardIndex) {
+        return VIA_RECIPE.get(shardIndex);
     }
 
     /** Clamps a line to an exact quantity - the shopping list's "batch"
@@ -113,6 +155,7 @@ public final class ShoppingList {
     public static void clear() {
         ITEMS.clear();
         STEP_CRAFTS.clear();
+        VIA_RECIPE.clear();
     }
 
     public static boolean isEmpty() {

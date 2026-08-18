@@ -39,7 +39,19 @@ public final class RouteSolver {
      *  {@code via[i]}: the recipe that achieves it, or {@link #BUY}. */
     public record Costs(double[] cost, int[] via) {}
 
-    public static Costs solve(FusionData data, IntToDoubleFunction unitBuyCost) {
+    /**
+     * @param pureReptileChance the player's current Pure Reptile chance
+     *        (0.0-0.20, see {@code Scorer.Settings#pureReptileChance}) - a
+     *        Reptile-eligible recipe's expected output is {@code qty *
+     *        (1 + pureReptileChance)} rather than a flat {@code qty}, so its
+     *        effective per-unit cost is lower than the naive division by
+     *        {@code qty} alone would say. Without this, a route through
+     *        several Reptile-family tiers (Python into King Cobra into
+     *        Basilisk, say) can lose to a route that never procs at all,
+     *        purely because the comparison ignored real, player-measured
+     *        upside one of them has and the other does not.
+     */
+    public static Costs solve(FusionData data, IntToDoubleFunction unitBuyCost, double pureReptileChance) {
         int n = data.shardCount();
         double[] cost = new double[n];
         int[] via = new int[n];
@@ -57,8 +69,8 @@ public final class RouteSolver {
                 double ca = cost[ai], cb = cost[bi];
                 if (Double.isInfinite(ca) || Double.isInfinite(cb)) continue;
 
-                double unit = (ca * data.shard(ai).fuseAmount() + cb * data.shard(bi).fuseAmount())
-                        / data.qty(r);
+                double qty = expectedQty(data, r, pureReptileChance);
+                double unit = (ca * data.shard(ai).fuseAmount() + cb * data.shard(bi).fuseAmount()) / qty;
                 if (unit < cost[ri] * 0.999) {
                     cost[ri] = unit;
                     via[ri] = r;
@@ -70,6 +82,17 @@ public final class RouteSolver {
         return new Costs(cost, via);
     }
 
+    /** {@code data.qty(r)}, scaled up for a Reptile-eligible recipe's own
+     *  chance to double its output - the expected yield {@link #solve} and
+     *  {@link #directCheapest} both price a craft's cost against. */
+    private static double expectedQty(FusionData data, int r, double pureReptileChance) {
+        double qty = data.qty(r);
+        if (pureReptileChance <= 0) return qty;
+        int ai = data.inputA(r), bi = data.inputB(r);
+        return Scorer.reptileEligible(data.shard(ai).tag(), data.shard(bi).tag())
+                ? qty * (1.0 + pureReptileChance) : qty;
+    }
+
     /**
      * The cheapest single recipe for each shard, buying both inputs straight
      * off the bazaar - no recursive fusing of the inputs, unlike {@link
@@ -77,7 +100,7 @@ public final class RouteSolver {
      * the "include multi-step routes" toggle is also on: one honest hop, not
      * the full recursively-optimal chain.
      */
-    public static Costs directCheapest(FusionData data, IntToDoubleFunction unitBuyCost) {
+    public static Costs directCheapest(FusionData data, IntToDoubleFunction unitBuyCost, double pureReptileChance) {
         int n = data.shardCount();
         double[] buyCost = new double[n];
         for (int i = 0; i < n; i++) {
@@ -95,8 +118,8 @@ public final class RouteSolver {
             double ca = buyCost[ai], cb = buyCost[bi];
             if (Double.isInfinite(ca) || Double.isInfinite(cb)) continue;
 
-            double unit = (ca * data.shard(ai).fuseAmount() + cb * data.shard(bi).fuseAmount())
-                    / data.qty(r);
+            double qty = expectedQty(data, r, pureReptileChance);
+            double unit = (ca * data.shard(ai).fuseAmount() + cb * data.shard(bi).fuseAmount()) / qty;
             if (unit < bestCost[ri]) {
                 bestCost[ri] = unit;
                 bestRecipe[ri] = r;
@@ -174,6 +197,79 @@ public final class RouteSolver {
         double total = 0;
         for (Buy b : route.buys()) total += costs.cost()[b.shardIndex()] * b.units();
         return total;
+    }
+
+    /**
+     * The expected coin value of every Reptile-eligible fusion in {@code
+     * route} over-delivering its nominal output - what {@link #routeCost}
+     * itself has no way to reflect, since it only sums {@code route.buys()}
+     * at each raw leaf's own price, which already assumes the nominal
+     * (non-doubled) output of every fused intermediate tier along the way.
+     * A real report: fusing toward Basilisk produced noticeably more profit
+     * than the mod projected, from Pure Reptile repeatedly proccing on the
+     * Python and King Cobra tiers feeding it, not just a chance on the final
+     * Basilisk fuse itself - subtracting this from {@link #routeCost} (or
+     * adding it to profit) is meant to close exactly that gap.
+     *
+     * <p>Each bonus unit is valued at {@code costs.cost()[]} - the cheapest
+     * way {@link #solve} already found to acquire one unit of that shard -
+     * rather than its live sell price. The bonus substitutes for buying or
+     * fusing that unit again further up the chain at least as often as it
+     * gets sold outright once the route is done, and acquisition cost is
+     * never higher than sale price for any route worth taking in the first
+     * place, so this is the conservative side of the two to assume -
+     * understating the credit rather than promising more than the bonus
+     * reliably delivers, the same direction {@code Scorer.evaluate}'s own
+     * Pure Reptile handling already leans.
+     *
+     * <p>Deliberately does not touch how many units {@link #explain} plans
+     * to buy or how many crafts of each step it lists - those stay the safe,
+     * guaranteed-sufficient plan regardless of luck. Only the coin figure
+     * changes, the same way a table row's profit column is a projection and
+     * its "batch" column is a hard limit, not the same kind of number.
+     *
+     * <p>Includes the route's own root recipe (its very last step) along with
+     * every intermediate one - correct for a caller pricing pure acquisition
+     * cost with no separate revenue term of its own (the route screen, the
+     * tooltip's cost line). A caller that already prices the root recipe's
+     * bonus through elevated sale revenue instead must use {@link
+     * #reptileCreditExcludingRoot} - see its own doc for why.
+     */
+    public static double reptileCredit(FusionData data, Costs costs, Route route, double pureReptileChance) {
+        return reptileCredit(data, costs, route.steps(), pureReptileChance);
+    }
+
+    /**
+     * As {@link #reptileCredit(FusionData, Costs, Route, double)}, but over
+     * every step except the very last - which {@link #explain} always
+     * appends as the route's own root recipe (see its source: {@code
+     * steps.add(new Step(rootRecipe, m))} runs after every dependency is
+     * already emitted). A caller that separately prices the root recipe's
+     * own Pure Reptile bonus through elevated sale revenue (any single-fuse
+     * {@code Scorer.Opportunity}, e.g. the table row {@code
+     * FusionWidgets.rowData} recomputes cost for) must use this instead of
+     * the full version - crediting the root step a second time on the cost
+     * side would double the exact same bonus output up: once through
+     * revenue, once through cost.
+     */
+    public static double reptileCreditExcludingRoot(FusionData data, Costs costs, Route route,
+                                                     double pureReptileChance) {
+        List<Step> steps = route.steps();
+        if (steps.isEmpty()) return 0;
+        return reptileCredit(data, costs, steps.subList(0, steps.size() - 1), pureReptileChance);
+    }
+
+    private static double reptileCredit(FusionData data, Costs costs, List<Step> steps, double pureReptileChance) {
+        if (pureReptileChance <= 0) return 0;
+        double credit = 0;
+        for (Step step : steps) {
+            int r = step.recipeIndex();
+            int ai = data.inputA(r), bi = data.inputB(r), ri = data.result(r);
+            if (!Scorer.reptileEligible(data.shard(ai).tag(), data.shard(bi).tag())) continue;
+            double bonusUnits = step.crafts() * data.qty(r) * pureReptileChance;
+            credit += bonusUnits * costs.cost()[ri];
+        }
+        return credit;
     }
 
     private static void demand(FusionData data, Costs costs, int shardIndex, int units,

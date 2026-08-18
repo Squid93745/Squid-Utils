@@ -2,6 +2,7 @@ package dev.squidutils.config;
 
 import com.google.gson.annotations.Expose;
 import io.github.notenoughupdates.moulconfig.annotations.Accordion;
+import io.github.notenoughupdates.moulconfig.annotations.Category;
 import io.github.notenoughupdates.moulconfig.annotations.ConfigEditorBoolean;
 import io.github.notenoughupdates.moulconfig.annotations.ConfigEditorButton;
 import io.github.notenoughupdates.moulconfig.annotations.ConfigEditorSlider;
@@ -10,10 +11,15 @@ import io.github.notenoughupdates.moulconfig.annotations.ConfigOption;
 import io.github.notenoughupdates.moulconfig.annotations.SearchTag;
 
 /**
- * Warns when a placed Bazaar order is no longer the best price on its side -
- * someone undercut a sell offer, or outbid a buy order - so it will sit
- * unfilled behind theirs until replaced. See {@link
- * dev.squidutils.bazaar.OrderTracker} for the chat lines this is built from.
+ * Bazaar features - "Bazaar" itself is just a master switch, the same shape
+ * {@link FishingCategory} uses, with three independent sub-pages beneath it:
+ * {@link OrderTrackerCategory} (warn when a placed order stops being the best
+ * price on its side), {@link OrderOverlayCategory} (tint a tracked order's
+ * own item red/green wherever it appears), and {@link OrderValueCategory}
+ * (a movable panel totalling what every tracked order is worth right now at
+ * live prices). All three used to live loose on this page - see {@code
+ * SquidUtils.migrateConfig} for why the split needed a one-time migration
+ * rather than just moving the Java fields.
  */
 public class BazaarCategory {
 
@@ -22,28 +28,95 @@ public class BazaarCategory {
     public static final int LIST_SOUNDS = 4;
 
     @Expose
-    @ConfigOption(name = "Track my orders",
-            desc = "Watch orders you place and warn once one stops being the "
-                    + "best price on its side.")
+    @ConfigOption(name = "Enable bazaar features", desc = "Master switch for this section.")
     @ConfigEditorBoolean
-    @SearchTag("bazaar order track outdated outbid undercut warn")
-    public boolean enabled = false;
+    @SearchTag("bazaar enable master switch")
+    public boolean enabled = true;
 
     @Expose
-    @ConfigOption(name = "Chat message", desc = "Announce it in chat.")
-    @ConfigEditorBoolean
-    @SearchTag("bazaar order chat message announce")
-    public boolean chatEnabled = true;
+    @Category(name = "Order Tracker",
+            desc = "Warn when a placed order stops being the best price on its side")
+    public OrderTrackerCategory orderTracker = new OrderTrackerCategory();
 
     @Expose
-    @ConfigOption(name = "Splash Text", desc = "Big on-screen text, like a title card.")
-    @Accordion
-    public Splash splash = new Splash();
+    @Category(name = "Order Overlay",
+            desc = "Tint a tracked order's own item red or green in whatever bazaar screen you have open")
+    public OrderOverlayCategory orderOverlay = new OrderOverlayCategory();
 
     @Expose
-    @ConfigOption(name = "Sound Settings", desc = "A sound the moment an order goes outdated.")
-    @Accordion
-    public Sound sound = new Sound();
+    @Category(name = "Order Value",
+            desc = "A movable panel totalling what your tracked orders are worth right now at live prices")
+    public OrderValueCategory orderValue = new OrderValueCategory();
+
+    /** Watches your own placed Bazaar orders and warns once one is no longer
+     *  the best price on its side - see {@link dev.squidutils.bazaar.OrderTracker}
+     *  for the chat lines this is built from. */
+    public static class OrderTrackerCategory {
+        @Expose
+        @ConfigOption(name = "Track my orders",
+                desc = "Watch orders you place and warn once one stops being the "
+                        + "best price on its side.")
+        @ConfigEditorBoolean
+        @SearchTag("bazaar order track outdated outbid undercut warn")
+        public boolean enabled = false;
+
+        @Expose
+        @ConfigOption(name = "Chat message", desc = "Announce it in chat.")
+        @ConfigEditorBoolean
+        @SearchTag("bazaar order chat message announce")
+        public boolean chatEnabled = true;
+
+        @Expose
+        @ConfigOption(name = "Splash Text", desc = "Big on-screen text, like a title card.")
+        @Accordion
+        public Splash splash = new Splash();
+
+        @Expose
+        @ConfigOption(name = "Sound Settings", desc = "A sound the moment an order goes outdated.")
+        @Accordion
+        public Sound sound = new Sound();
+    }
+
+    /** Which bazaar item slots get tinted, and which colour - named
+     *  differently from {@link dev.squidutils.bazaar.OrderOverlay}, the
+     *  class that actually draws it, on purpose: two classes sharing one
+     *  simple name across packages reads as a copy-paste accident even when
+     *  it is not. */
+    public static class OrderOverlayCategory {
+        @Expose
+        @ConfigOption(name = "Outdated order overlay",
+                desc = "Red background on an item whose tracked order has been "
+                        + "undercut or outbid.")
+        @ConfigEditorBoolean
+        @SearchTag("bazaar overlay outdated red background item slot")
+        public boolean outdated = true;
+
+        @Expose
+        @ConfigOption(name = "Up to date order overlay",
+                desc = "Green background on an item whose tracked order is "
+                        + "still the best price on its side.")
+        @ConfigEditorBoolean
+        @SearchTag("bazaar overlay up to date green background item slot")
+        public boolean upToDate = false;
+    }
+
+    /** The movable "Order Value" panel's own toggle - see {@code
+     *  FusionWidgets}'s {@code ORDER_VALUE} case for the panel itself. */
+    public static class OrderValueCategory {
+        @Expose
+        @ConfigOption(name = "Show order value panel",
+                desc = "A movable panel listing every order currently sitting in "
+                        + "the bazaar and what it is worth right now if instasold "
+                        + "(a sell offer) or instabought (a buy order) instead of "
+                        + "waiting for it to fill - hover a row for the exact "
+                        + "breakdown, instead of hovering each order on the real "
+                        + "Bazaar screen one at a time. Needs the Co-op Bazaar "
+                        + "Orders screen opened at least once to see your orders "
+                        + "at all - there is no other way to read them.")
+        @ConfigEditorBoolean
+        @SearchTag("bazaar order value panel live price instasell instabuy worth")
+        public boolean enabled = false;
+    }
 
     public static class Splash {
         @Expose

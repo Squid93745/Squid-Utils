@@ -94,6 +94,19 @@ public class FusionSettingsCategory {
         @ConfigEditorSlider(minValue = 0.01f, maxValue = 0.50f, minStep = 0.01f)
         @SearchTag("batch depth limit tolerance profit drop order book")
         public float depthLimitThreshold = 0.10f;
+
+        @Expose
+        @ConfigOption(name = "Batch flat tolerance",
+                desc = "An alternative to the profit tolerance above, checked "
+                        + "per shard: how many coins past its own current top-of-book "
+                        + "price one leg may drift before it - specifically - is "
+                        + "treated as the batch's limiter. Whichever of the two "
+                        + "tolerances allows more fuses wins, since a percentage of "
+                        + "profit alone can be dragged down by a completely different, "
+                        + "thinner leg even while this one's own price barely moved.")
+        @ConfigEditorSlider(minValue = 0.5f, maxValue = 50f, minStep = 0.5f)
+        @SearchTag("batch depth limit flat tolerance coins per shard")
+        public float depthLimitFlatTolerance = 5.0f;
     }
 
     public static class Filters {

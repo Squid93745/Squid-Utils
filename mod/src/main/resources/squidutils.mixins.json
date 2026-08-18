@@ -5,6 +5,7 @@
   "client": [
     "SoundEngineMixin",
     "AbstractSoundInstanceAccessor",
+    "AbstractContainerScreenAccessor",
     "GuiMixin",
     "ActionBarPacketMixin",
     "ExperiencePacketMixin",

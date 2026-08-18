@@ -1,5 +1,7 @@
 package dev.squidutils.fusion.hud;
 
+import dev.squidutils.bazaar.OrderOverlay;
+import dev.squidutils.bazaar.OrderTracker;
 import dev.squidutils.config.FusionCategory;
 import dev.squidutils.config.SquidUtilsConfig;
 import dev.squidutils.config.WidgetPos;
@@ -14,6 +16,7 @@ import dev.squidutils.hud.Draw;
 import dev.squidutils.hud.ShoppingList;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.network.chat.Component;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -47,7 +50,14 @@ public final class FusionWidgets {
         XP_TABLE(5, -1), XP_G1(5, 0), XP_G2(5, 1), XP_G3(5, 2),
         TRACKER(-1, -1),
         SHOPPING_LIST(-1, -1),
-        FUSE_ORDER(-1, -1);
+        FUSE_ORDER(-1, -1),
+        /** Not a fusion panel at all - a bazaar one, gated by {@code
+         *  cfg.bazaar.enabled} rather than {@code cfg.fusion.enabled} (see
+         *  {@link #enabled}) - drawn here anyway so it shares the same
+         *  movable-panel machinery (drag/resize editor, {@code WidgetPos}
+         *  persistence) every other panel already has, rather than a second
+         *  copy of it. */
+        ORDER_VALUE(-1, -1);
 
         public final int table;
         public final int graph;
@@ -61,6 +71,7 @@ public final class FusionWidgets {
         public boolean isTracker() { return this == TRACKER; }
         public boolean isShoppingList() { return this == SHOPPING_LIST; }
         public boolean isFuseOrder() { return this == FUSE_ORDER; }
+        public boolean isOrderValue() { return this == ORDER_VALUE; }
     }
 
     private static final int ICON = 9;
@@ -234,6 +245,7 @@ public final class FusionWidgets {
         if (which.isTracker()) return cfg.general.trackerPos;
         if (which.isShoppingList()) return cfg.general.shoppingListPos;
         if (which.isFuseOrder()) return cfg.general.fuseOrderPos;
+        if (which.isOrderValue()) return cfg.general.orderValuePos;
         return which.isGraph()
                 ? cfg.general.graphPos[which.table][which.graph]
                 : cfg.general.tablePos[which.table];
@@ -245,6 +257,7 @@ public final class FusionWidgets {
         if (which.isTracker()) return "Session tracker";
         if (which.isShoppingList()) return "Shopping list";
         if (which.isFuseOrder()) return "Fuse order";
+        if (which.isOrderValue()) return "Order value";
         return which.isGraph()
                 ? tableName(cfg, which.table) + " · " + METRIC_NAME[which.graph]
                 : tableName(cfg, which.table);
@@ -256,8 +269,19 @@ public final class FusionWidgets {
      * <p>{@code WidgetPos.enabled} is deliberately not consulted: an earlier
      * build let you right-click a panel away inside the editor, and once the
      * editor stopped drawing hidden panels there was no way to bring one back.
+     *
+     * <p>{@link Which#ORDER_VALUE} is checked first and returns on its own -
+     * it answers to {@code cfg.bazaar.enabled}, not {@code cfg.fusion.enabled},
+     * since it is a bazaar feature that happens to share this movable-panel
+     * machinery rather than an actual fusion one. Every other case still sits
+     * behind {@code cfg.fusion.enabled} the way the whole {@code Which} loop
+     * used to at its call site - moved in here instead of staying a blanket
+     * check in {@code FusionHud.drawAll} specifically so it does not also
+     * swallow the one panel that owes it no allegiance.
      */
     public static boolean enabled(SquidUtilsConfig cfg, Which which) {
+        if (which.isOrderValue()) return cfg.bazaar.enabled && cfg.bazaar.orderValue.enabled;
+        if (!cfg.fusion.enabled) return false;
         if (which.isTracker()) return cfg.fusion.tracker.trackerShow;
         // Gated purely by the toggle, same as every other panel - not by
         // whether the list currently has anything in it. Hiding an empty
@@ -284,6 +308,7 @@ public final class FusionWidgets {
     public static boolean hasContent(Which which) {
         if (which.isShoppingList()) return !ShoppingList.isEmpty();
         if (which.isFuseOrder()) return ShoppingList.hasSteps();
+        if (which.isOrderValue()) return !OrderOverlay.myOrders().isEmpty();
         return true;
     }
 
@@ -308,6 +333,7 @@ public final class FusionWidgets {
         if (which.isTracker()) return tracker(g, font, cfg, mouseX, mouseY);
         if (which.isShoppingList()) return shoppingList(g, font, engine, pos(cfg, which));
         if (which.isFuseOrder()) return fuseOrder(g, font, engine, pos(cfg, which));
+        if (which.isOrderValue()) return orderValue(g, font, engine, pos(cfg, which), mouseX, mouseY);
         return which.isGraph()
                 ? graph(g, font, cfg, engine, which, preview)
                 : table(g, font, cfg, engine, which, preview);
@@ -481,7 +507,7 @@ public final class FusionWidgets {
             // column reads - so this tracks the engine's own refresh cadence
             // (Trading > refresh interval, 20s minimum) rather than being
             // frozen at the moment the line was added to the list.
-            long safe = product != null ? Scorer.buyDepthLimit(product, cfg, ref) : Long.MAX_VALUE;
+            long safe = safeUnits(engine, data, e.shardIndex(), product, cfg, ref);
             boolean over = e.units() > safe;
             overBudget.add(over);
             safeAmounts.add(safe);
@@ -537,11 +563,169 @@ public final class FusionWidgets {
         return new int[]{width + 8, height};
     }
 
+    /**
+     * Every order the last scan of the Co-op Bazaar Orders screen found (see
+     * {@link OrderOverlay#myOrders}) - every order actually sitting in the
+     * bazaar right now, not just ones placed while the mod happened to be
+     * running to see it in chat, since {@link OrderTracker}'s own list is
+     * chat-built and session-only. Each is priced at what completing it
+     * <em>right now</em> instead of waiting would get you - a sell offer's
+     * live figure is what instaselling those items nets (the current top buy
+     * order, {@link BazaarClient.Product#instaSell()}), and a buy order's is
+     * what instabuying that quantity would cost (the current top sell offer,
+     * {@link BazaarClient.Product#instaBuy()}) - deliberately the opposite
+     * pairing {@link OrderOverlay}'s own tint uses, since that asks "is my
+     * own resting order still competitive on its own side of the book"
+     * while this asks "what would walking away from it and acting instantly
+     * get me instead."
+     *
+     * <p>Rows list every order directly, so nothing here needs hovering just
+     * to be seen at all - unlike the real Bazaar screen, where that figure
+     * only ever shows one item's tooltip at a time. Hovering a row here
+     * still does something further: it breaks down the exact arithmetic
+     * behind that row's number, and how it compares to what the order
+     * itself is waiting to net at its own listed price.
+     */
+    private static int[] orderValue(GuiGraphicsExtractor g, Font font, FusionEngine engine,
+                                    WidgetPos p, int mouseX, int mouseY) {
+        var orders = OrderOverlay.myOrders();
+        var products = engine.products();
+        var data = engine.data();
+        int lineH = font.lineHeight + 1;
+
+        List<String> lineTexts = new ArrayList<>(orders.size());
+        List<Integer> lineColours = new ArrayList<>(orders.size());
+        List<double[]> figures = new ArrayList<>(orders.size());   // {livePrice, liveValue, orderValue}
+        double sellTotal = 0, buyTotal = 0;
+        boolean anySellUnknown = false, anyBuyUnknown = false;
+
+        for (var o : orders) {
+            var product = o.tag() == null ? null : products.get(o.tag());
+            double livePrice = product == null ? -1 : (o.sell() ? product.instaSell() : product.instaBuy());
+            double liveValue = livePrice > 0 && o.quantity() != null ? livePrice * o.quantity() : -1;
+            double orderTotal = o.quantity() != null ? o.unitPrice() * o.quantity() : -1;
+
+            String valueText;
+            if (liveValue >= 0) {
+                valueText = Draw.coins(liveValue);
+                if (o.sell()) sellTotal += liveValue; else buyTotal += liveValue;
+            } else {
+                valueText = "?";
+                if (o.sell()) anySellUnknown = true; else anyBuyUnknown = true;
+            }
+
+            String qtyText = o.quantity() != null ? o.quantity() + "x" : "?x";
+            lineTexts.add((o.sell() ? "SELL " : "BUY  ") + qtyText + " " + o.item()
+                    + "  (" + valueText + ")");
+            lineColours.add(o.sell() ? Draw.C_PROFIT : Draw.C_COST);
+            figures.add(new double[]{livePrice, liveValue, orderTotal});
+        }
+
+        String title = orders.isEmpty() ? "Order value"
+                : "Order value  (sell " + Draw.coins(sellTotal) + (anySellUnknown ? "+" : "")
+                        + "  ·  buy " + Draw.coins(buyTotal) + (anyBuyUnknown ? "+" : "") + ")";
+
+        int width = font.width(title);
+        for (int i = 0; i < lineTexts.size(); i++) {
+            width = Math.max(width, ICON + 6 + font.width(lineTexts.get(i)));
+        }
+        String empty = "empty - open Co-op Bazaar Orders once to scan your orders";
+        if (orders.isEmpty()) width = Math.max(width, font.width(empty));
+
+        int height = lineH * (1 + Math.max(1, orders.size())) + 8;
+        begin(g, p);
+        Draw.panel(g, width + 8, height, 0xC09E9EFF);
+
+        int y = 4;
+        g.text(font, title, 4, y, Draw.TITLE);
+        y += lineH + 2;
+
+        if (orders.isEmpty()) {
+            g.text(font, empty, 4, y, Draw.DIM);
+        } else {
+            for (int i = 0; i < orders.size(); i++) {
+                var o = orders.get(i);
+                int idx = o.tag() == null ? -1 : data.indexOfTag(o.tag());
+                if (idx >= 0) drawIcon(g, font, 4, y - 1, ICON, data.shard(idx));
+
+                int rowScreenY = p.y + Math.round((y - 1) * p.scale);
+                int rowScreenH = Math.round((font.lineHeight + 2) * p.scale);
+                boolean hovered = mouseX >= p.x && mouseX <= p.x + Math.round((width + 4) * p.scale)
+                        && mouseY >= rowScreenY && mouseY <= rowScreenY + rowScreenH;
+
+                g.text(font, lineTexts.get(i), 4 + ICON + 6, y, lineColours.get(i));
+                if (hovered) {
+                    g.setComponentTooltipForNextFrame(font, orderTooltip(o, figures.get(i)), mouseX, mouseY);
+                }
+                y += lineH;
+            }
+        }
+        end(g);
+        return new int[]{width + 8, height};
+    }
+
+    /** {@link #orderValue}'s per-row hover breakdown: the live math behind
+     *  that row's compact number, and how it stacks up against what the
+     *  order itself is waiting to net at its own listed price. */
+    private static List<Component> orderTooltip(OrderOverlay.Order o, double[] figures) {
+        double livePrice = figures[0], liveValue = figures[1], orderTotal = figures[2];
+        List<Component> lines = new ArrayList<>();
+        String qtyText = o.quantity() != null ? o.quantity() + "x" : "an unknown quantity";
+        lines.add(Component.literal(o.item() + " — " + (o.sell() ? "Sell offer" : "Buy order") + " " + qtyText));
+        if (o.quantity() == null) {
+            lines.add(Component.literal("Quantity could not be read from this order's tooltip"));
+        } else if (livePrice > 0) {
+            lines.add(Component.literal((o.sell() ? "Instasell now: " : "Instabuy now: ")
+                    + Draw.coins(livePrice) + "/ea = " + Draw.coins(liveValue) + " coins"));
+            lines.add(Component.literal("Your order: " + Draw.coins(o.unitPrice())
+                    + "/ea = " + Draw.coins(orderTotal) + " coins"));
+            // Positive always means "acting instantly beats waiting", regardless
+            // of side - a sell offer nets more by instaselling, a buy order
+            // costs less by instabuying, so the two must flip sign relative to
+            // each other to share one consistent meaning here.
+            double favorInstant = o.sell() ? liveValue - orderTotal : orderTotal - liveValue;
+            lines.add(Component.literal((favorInstant >= 0 ? "+" : "") + Draw.coins(favorInstant)
+                    + " if you " + (o.sell() ? "instasold" : "instabought") + " instead of waiting"));
+        } else {
+            lines.add(Component.literal("Live price unavailable right now"));
+        }
+        return lines;
+    }
+
+    /**
+     * The safe quantity of one shopping-list shard - {@link
+     * Scorer#depthLimitForRecipe} against whichever recipe {@link
+     * ShoppingList#viaRecipe} says actually consumes it, converted from a
+     * fuse count into raw units of this specific shard, or {@link
+     * Scorer#buyDepthLimit}'s own price-only number if that recipe is not
+     * known. The difference matters: a shard with plenty of its own buy-side
+     * liquidity but feeding a thin-margin or thin-selling recipe used to
+     * report a "safe" quantity far larger than that fusion's own batch
+     * column would ever allow, since the old check never looked past the
+     * one shard's own price at all.
+     */
+    private static long safeUnits(FusionEngine engine, FusionData data, int shardIndex,
+                                  BazaarClient.Product product, Scorer.Settings cfg, Brain.Ref ref) {
+        Integer via = ShoppingList.viaRecipe(shardIndex);
+        if (via != null) {
+            int r = via;
+            int ai = data.inputA(r), bi = data.inputB(r);
+            int perFuse = ai == bi ? data.shard(ai).fuseAmount() * 2
+                    : shardIndex == ai ? data.shard(ai).fuseAmount()
+                    : shardIndex == bi ? data.shard(bi).fuseAmount() : 0;
+            if (perFuse > 0) {
+                var depth = Scorer.depthLimitForRecipe(data, r, engine.products(), engine.brain(), cfg);
+                if (depth != null) return depth.fuses() * perFuse;
+            }
+        }
+        return product != null ? Scorer.buyDepthLimit(product, cfg, ref) : Long.MAX_VALUE;
+    }
+
     private static final String BATCH_LABEL = " [batch]";
 
     /** Clamps an over-budget shopping list line down to the safe quantity
-     *  {@link Scorer#buyDepthLimit} allows right now - only drawn once a
-     *  line is already flagged over budget, since there is nothing to clamp
+     *  {@link #safeUnits} allows right now - only drawn once a line is
+     *  already flagged over budget, since there is nothing to clamp
      *  otherwise. Reads the same live {@code safe} value the line's warning
      *  text already shows, so the amount it sets tracks the engine's own
      *  refresh cadence rather than a value frozen at add-time. */
@@ -918,7 +1102,7 @@ public final class FusionWidgets {
                 double secs = Recommender.fillSeconds(o);
                 yield secs < 1 ? "instant" : Math.round(secs) + "s";
             }
-            case BOTTLENECK -> o.limiter() + "  (" + Draw.units(o.limiterVolume()) + "/h)";
+            case BOTTLENECK -> o.limiter() + "  (+" + Math.round(o.limiterImpact() * 100) + "%)";
             case DEPTH_LIMIT -> {
                 long n = o.depthLimitFuses();
                 yield n >= 1_000_000 ? "1M+" : n + "x";
@@ -1004,11 +1188,19 @@ public final class FusionWidgets {
             int via = shardIndex >= 0 ? costs.via()[shardIndex] : RouteSolver.BUY;
             if (via != RouteSolver.BUY) {
                 var route = RouteSolver.explain(data, costs, via);
-                double routeCost = liveRouteCost(engine, snap, settingsFor(engine, t), route);
+                var routeSettings = settingsFor(engine, t);
+                double routeCost = liveRouteCost(engine, snap, routeSettings, route);
                 if (routeCost >= 0) {
                     double revenue = o.profit() + o.cost();   // recover sell-side revenue
-                    cost = routeCost;
-                    profit = revenue - routeCost;
+                    // Pure Reptile can proc on any Reptile-eligible
+                    // intermediate tier along the route - the root recipe's
+                    // own bonus is already inside revenue (o came from
+                    // Scorer.evaluate, which already prices it there), so
+                    // this excludes the root step to avoid crediting it twice.
+                    double credit = RouteSolver.reptileCreditExcludingRoot(
+                            data, costs, route, routeSettings.pureReptileChance());
+                    cost = Math.max(0, routeCost - credit);
+                    profit = revenue - cost;
                     roi = cost > 0 ? profit / cost : 0;
                     rootRecipe = via;
                     steps = route.steps().size();

@@ -45,7 +45,7 @@ public class HeadlessCheck {
         Scorer.Settings cfg = new Scorer.Settings(
                 0.00875, Scorer.BuyMode.INSTA_BUY, Scorer.SellMode.SELL_OFFER,
                 0.20, 0.5, 1000, 0, 5000, 0.35, 0.20, 3, true, 30.0, 0.7,
-                Set.of(), Set.of(), Set.of(), false, 34, 0.10);
+                Set.of(), Set.of(), Set.of(), false, 34, 0.10, 0, 5.0);
 
         long t0 = System.nanoTime();
         var all = Scorer.evaluate(data, client.products(), brain, cfg, hour);

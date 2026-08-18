@@ -91,7 +91,11 @@ public class MultiStepScreen extends Screen {
         var route = RouteSolver.explain(data, costs, rootRecipe, multiplier);
         var result = data.shard(data.result(rootRecipe));
         int qty = data.qty(rootRecipe) * multiplier;
-        double total = RouteSolver.routeCost(data, costs, route);
+        // Pure Reptile can proc on any Reptile-eligible tier along the
+        // route, not just the root recipe - see RouteSolver.reptileCredit.
+        double pureReptileChance = engine.currentSettings().pureReptileChance();
+        double total = Math.max(0, RouteSolver.routeCost(data, costs, route)
+                - RouteSolver.reptileCredit(data, costs, route, pureReptileChance));
         int lineH = font.lineHeight + 3;
 
         String titleText = qty + "x " + result.name() + "  (" + Draw.coins(total) + ")";
@@ -130,7 +134,7 @@ public class MultiStepScreen extends Screen {
         // holding a number key to pick a stack size - useful when stocking up
         // rather than doing the fusion exactly once. "Max" is a fifth, dynamic
         // preset alongside the fixed ones - see safeMaxMultiplier().
-        int safeMax = safeMaxMultiplier(engine, data, costs, rootRecipe);
+        int safeMax = safeMaxMultiplier(engine, data, rootRecipe);
         y = drawMultiplierRow(g, contentX, y, safeMax);
         y += 6;
         y = drawActionRow(g, contentX, y, route);
@@ -177,13 +181,15 @@ public class MultiStepScreen extends Screen {
         }
 
         // A fifth, dynamic preset: however many crafts' worth of raw shards
-        // the order book can actually absorb right now without the average
-        // price paid sliding past Settings.depthLimitThreshold - the same
-        // safety margin the shopping list panel's own [batch] button clamps
-        // an over-budget line down to, just picked proactively here instead
-        // of reactively after the fact. Coloured like the "batch" table
-        // column (Draw.C_BATCH) rather than the fixed presets' purple, since
-        // it is not a fixed quantity the way they are.
+        // the order book can actually absorb right now without either of
+        // Scorer#depthLimit's two floors tripping - Settings.depthLimitThreshold
+        // (profit) or Settings.depthLimitFlatTolerance (coins per shard),
+        // whichever allows more - the same safety margin the shopping list
+        // panel's own [batch] button clamps an over-budget line down to, just
+        // picked proactively here instead of reactively after the fact.
+        // Coloured like the "batch" table column (Draw.C_BATCH) rather than
+        // the fixed presets' purple, since it is not a fixed quantity the way
+        // they are.
         String maxText = "Max";
         int maxW = font.width(maxText) + 6;
         boolean maxActive = multiplier == safeMax;
@@ -195,40 +201,33 @@ public class MultiStepScreen extends Screen {
     }
 
     /**
-     * The largest multiplier such that every raw shard this route needs to
-     * buy stays within its own {@link Scorer#buyDepthLimit} - "Max"'s whole
-     * point, so clicking it (then "Add to shopping list") queues exactly as
-     * much as the book can absorb right now without walking deep enough into
-     * it to pay noticeably worse prices, instead of a fixed preset that might
-     * be too much and only warn about it after the fact.
+     * The largest multiplier such that this recipe's own average profit per
+     * fuse stays within {@code Settings.depthLimitThreshold} of its first
+     * fuse's profit, OR every individual leg's own price stays within {@code
+     * Settings.depthLimitFlatTolerance} coins of its top-of-book rate,
+     * whichever allows more - {@link Scorer#depthLimit}, the same formula
+     * the table's own "batch" column already uses, so "Max" here means the
+     * same thing it means everywhere else in the mod: keep buying/selling
+     * deeper as long as it is still profitable to, within tolerance, not
+     * "stop the instant one input's own price ticks up" the way a plain
+     * price-depth
+     * check would. A recipe still making good money at a worse price is
+     * exactly the case where more batch means more profit; a price-only
+     * check has no way to know that and would cut it off too early.
      *
-     * <p>Solved from the multiplier-1 route rather than whichever multiplier
-     * is currently selected, so picking a different preset first does not
-     * change what "Max" itself resolves to. A leg with no real depth-limit
-     * risk - a resting buy order, or a shard with no live price at all -
-     * reports {@link Long#MAX_VALUE} from {@code buyDepthLimit} and so never
-     * constrains the result, the same convention the shopping list panel's
-     * own batch clamp already uses for an unpriced product.
+     * <p>Solved from the root recipe's own two inputs directly, not the
+     * multi-step route beneath it - a further-fused input's own market
+     * price is still the honest baseline to measure drift from, the same
+     * approximation {@link dev.squidutils.fusion.engine.Scorer#evaluate}
+     * itself makes for a "direct" opportunity's numbers. {@link
+     * Scorer#depthLimitForRecipe} is the same lookup the shopping list's own
+     * batch clamp now shares, once it knows which recipe a queued shard
+     * feeds - see {@code ShoppingList.viaRecipe}.
      */
-    private static int safeMaxMultiplier(FusionEngine engine, FusionData data, RouteSolver.Costs costs,
-                                          int rootRecipe) {
-        Scorer.Settings cfg = engine.currentSettings();
-        var products = engine.products();
-        var brain = engine.brain();
-        var base = RouteSolver.explain(data, costs, rootRecipe, 1);
-
-        long max = MAX_SAFE_MULTIPLIER;
-        for (var buy : base.buys()) {
-            if (buy.units() <= 0) continue;
-            var s = data.shard(buy.shardIndex());
-            var product = products.get(s.tag());
-            long safe = product != null
-                    ? Scorer.buyDepthLimit(product, cfg, brain.reference(s.tag()))
-                    : Long.MAX_VALUE;
-            if (safe == Long.MAX_VALUE) continue;
-            max = Math.min(max, safe / buy.units());
-        }
-        return (int) Math.max(1, Math.min(max, MAX_SAFE_MULTIPLIER));
+    private static int safeMaxMultiplier(FusionEngine engine, FusionData data, int rootRecipe) {
+        var depth = Scorer.depthLimitForRecipe(data, rootRecipe, engine.products(), engine.brain(),
+                engine.currentSettings());
+        return depth == null ? 1 : (int) Math.max(1, Math.min(depth.fuses(), MAX_SAFE_MULTIPLIER));
     }
 
     /** Adding is the only action left here - viewing the list is now the

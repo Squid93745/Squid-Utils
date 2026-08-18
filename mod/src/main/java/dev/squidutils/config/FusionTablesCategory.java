@@ -82,10 +82,11 @@ public class FusionTablesCategory {
 
     @Expose
     @ConfigOption(name = "Show bottleneck",
-            desc = "Which flow limits throughput: an input, or output absorption - "
-                    + "and roughly how much of it trades per hour.")
+            desc = "Why the batch column stops where it does: which leg - an "
+                    + "input, or the output sale - runs out of cheap order-book "
+                    + "room first, and by how much its price has moved.")
     @ConfigEditorBoolean
-    @SearchTag("bottleneck limit throughput volume column")
+    @SearchTag("bottleneck limit batch depth column")
     public boolean showBottleneck = true;
 
     @Expose

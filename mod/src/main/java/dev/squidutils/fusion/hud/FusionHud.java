@@ -136,7 +136,14 @@ public final class FusionHud implements HudElement {
 
     private void drawAll(GuiGraphicsExtractor g, Minecraft mc, boolean dimmed, int mouseX, int mouseY) {
         SquidUtilsConfig cfg = config.get();
-        if (cfg == null || !cfg.general.showHud || !cfg.fusion.enabled) return;
+        // Per-panel feature gates (cfg.fusion.enabled for the fusion panels,
+        // cfg.bazaar.enabled for the Order Value one) live inside
+        // FusionWidgets.enabled() itself now, not here - a blanket check on
+        // this loop would hide the bazaar panel too every time Shard Fusion
+        // specifically was switched off, even though it owes that toggle
+        // nothing. general.showHud is the one true master switch every panel
+        // answers to regardless of which feature it belongs to.
+        if (cfg == null || !cfg.general.showHud) return;
         Font font = mc.font;
         if (font == null) return;
 

@@ -173,7 +173,10 @@ public class SquidUtils implements ClientModInitializer {
 
                     net.fabricmc.fabric.api.client.screen.v1.ScreenEvents
                             .afterBackground(screen)
-                            .register((s, gfx, mx, my, tick) -> hud.drawUnderScreen(gfx, mx, my));
+                            .register((s, gfx, mx, my, tick) -> {
+                                hud.drawUnderScreen(gfx, mx, my);
+                                dev.squidutils.bazaar.OrderOverlay.render(s, gfx);
+                            });
 
                     // Clicking a legend header sorts by it, a multi-step row
                     // opens its route, and a shard name opens its bazaar page
@@ -240,12 +243,16 @@ public class SquidUtils implements ClientModInitializer {
         net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents.GAME
                 .register((message, overlay) -> {
                     TRACKER.onChat(message.getString(), overlay);
-                    if (!overlay) dev.squidutils.bazaar.OrderTracker.onChat(message.getString());
+                    if (!overlay) {
+                        dev.squidutils.bazaar.OrderTracker.onChat(message.getString());
+                        dev.squidutils.fusion.AttributeDetector.onChat(message.getString());
+                    }
                 });
         net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents.CHAT
                 .register((message, signed, sender, params, time) -> {
                     TRACKER.onChat(message.getString(), false);
                     dev.squidutils.bazaar.OrderTracker.onChat(message.getString());
+                    dev.squidutils.fusion.AttributeDetector.onChat(message.getString());
                 });
 
         // /squidutils and /squid both open the settings. Client-side commands,
@@ -336,6 +343,7 @@ public class SquidUtils implements ClientModInitializer {
                 config.openConfigGui();
             }
             dev.squidutils.fusion.WisdomDetector.tick(client);
+            dev.squidutils.fusion.AttributeDetector.tick(client);
             TRACKER.tick();
             dev.squidutils.fishing.FrozenBlazeOverlay.tick(client);
             dev.squidutils.bazaar.OrderTracker.tick(client);
@@ -438,6 +446,24 @@ public class SquidUtils implements ClientModInitializer {
             com.google.gson.JsonObject fishing = childObject(root, "fishing");
             if (fishing != null) changed |= hoistIntoParent(fishing, "general");
 
+            // 0.4.x: "Bazaar" held its order-tracker fields (enabled,
+            // chatEnabled, splash, sound) directly on its own page, the same
+            // shape Shard Fusion and Fishing had before their own 0.3.x
+            // migration above - now "Bazaar" is just a master switch (default
+            // on, matching Fishing's own enabled field) with order tracking
+            // moved to its own "Order Tracker" sub-page, alongside Order
+            // Overlay and the new Order Value panel. The old `enabled` meant
+            // "track my orders" specifically, not "bazaar features on at
+            // all" - sinkIntoChild carries that value over as
+            // orderTracker.enabled and removes the old top-level key, so the
+            // new master-switch meaning gets its own (true) default instead
+            // of silently inheriting the old tracking toggle's (usually
+            // false) value.
+            com.google.gson.JsonObject bazaar = childObject(root, "bazaar");
+            if (bazaar != null && !bazaar.has("orderTracker")) {
+                changed |= sinkIntoChild(bazaar, "orderTracker", "enabled", "chatEnabled", "splash", "sound");
+            }
+
             com.google.gson.JsonObject general = childObject(root, "general");
             // Table index space grew from 3 slots (Recommended, Profit
             // Shards, XP) to 6 (Recommended, Profit Shards 1-4, XP) in the
@@ -483,6 +509,29 @@ public class SquidUtils implements ClientModInitializer {
         }
         parent.remove(childKey);
         return true;
+    }
+
+    /**
+     * Moves the named fields out of {@code parent} into a new {@code
+     * parent.<childKey>} object, removing them from {@code parent} itself -
+     * the reverse of {@link #hoistIntoParent}, for a set of options that
+     * used to render as loose fields on a category's own page and now live
+     * under one of its sub-pages instead. A no-op (returns false, adds
+     * nothing) if none of the named fields are actually present, so it is
+     * safe to call on a config that never had them to begin with.
+     */
+    private static boolean sinkIntoChild(com.google.gson.JsonObject parent, String childKey, String... fields) {
+        com.google.gson.JsonObject child = new com.google.gson.JsonObject();
+        boolean moved = false;
+        for (String field : fields) {
+            if (parent.has(field)) {
+                child.add(field, parent.get(field));
+                parent.remove(field);
+                moved = true;
+            }
+        }
+        if (moved) parent.add(childKey, child);
+        return moved;
     }
 
     private static boolean migrateTableSlots(com.google.gson.JsonObject general, String key) {
@@ -547,7 +596,9 @@ public class SquidUtils implements ClientModInitializer {
                 // is no longer what decides order.
                 false,
                 c.fusion.huntingWisdom,
-                c.fusion.settings.trading.depthLimitThreshold);
+                c.fusion.settings.trading.depthLimitThreshold,
+                dev.squidutils.fusion.AttributeDetector.pureReptileChance(),
+                c.fusion.settings.trading.depthLimitFlatTolerance);
     }
 
     /**

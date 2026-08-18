@@ -29,6 +29,45 @@ public final class Scorer {
     private static final double HOURS_PER_WEEK = 168.0;
     private static final double TICK = 0.1;
 
+    /**
+     * Every shard in the Reptile family (its Lizard/Serpent/Turtle/Croco/
+     * Scaled sub-families included) - the set of inputs that can trigger the
+     * Pure Reptile Attribute's chance to double a fusion's output, per the
+     * SkyBlock wiki's Attribute Fusion page. Hardcoded rather than sourced
+     * from {@code fusion.json}, which does not carry a family field at all
+     * (only {@code fuseAmount}, and that alone cannot tell Reptile apart
+     * from Amphibian or Elemental - all three get the same fuse_amount=2
+     * discount). Family membership is essentially static game content, so a
+     * fixed set here is far less to maintain than a data-pipeline change for
+     * one feature; {@link #REPTILE_TAGS} is exactly the shard list the raw
+     * lab data tags with a "Reptile" family, Chameleon included even though
+     * its own fuse_amount is 1, since the wiki explicitly calls out Chameleon
+     * Shards as still counting.
+     */
+    private static final Set<String> REPTILE_TAGS = Set.of(
+            "SHARD_NEWT", "SHARD_SALAMANDER", "SHARD_CUBOA", "SHARD_VIPER",
+            "SHARD_WATER_SNAKE", "SHARD_TEWTIL", "SHARD_LIZARD_KING", "SHARD_PYTHON",
+            "SHARD_CROCODILE", "SHARD_KING_COBRA", "SHARD_GECKO", "SHARD_CHUCKWALLA",
+            "SHARD_LEVIATHAN", "SHARD_ALLIGATOR", "SHARD_BASILISK", "SHARD_IGUANA",
+            "SHARD_KOMODO_DRAGON", "SHARD_SHELLWISE", "SHARD_CAIMAN", "SHARD_LEATHERBACK",
+            "SHARD_CHAMELEON", "SHARD_NESSIE", "SHARD_TIAMAT", "SHARD_WYVERN",
+            "SHARD_TORTOISE", "SHARD_MEGALITH", "SHARD_QUEEN_SNAKE", "SHARD_TITANOBOA");
+
+    /**
+     * Whether a recipe with these two input tags can trigger Pure Reptile's
+     * chance to double its output - public so {@link RouteSolver} can apply
+     * the same eligibility check to every tier of a multi-step route, not
+     * just the single fuse {@link #evaluate} scores directly. Pure Reptile
+     * can proc on <em>any</em> eligible tier along a chain, not only the one
+     * that produces the chain's own final shard - a real report: fusing
+     * toward Basilisk produced noticeably more profit than projected, from
+     * Pure Reptile repeatedly proccing on the Python and King Cobra tiers
+     * that fed it, not just a chance on the final Basilisk fuse itself.
+     */
+    public static boolean reptileEligible(String tagA, String tagB) {
+        return REPTILE_TAGS.contains(tagA) || REPTILE_TAGS.contains(tagB);
+    }
+
     public enum BuyMode { INSTA_BUY, BUY_ORDER }
     public enum SellMode { SELL_OFFER, INSTA_SELL }
 
@@ -59,12 +98,37 @@ public final class Scorer {
              *  fuse's own, buying/selling deeper into the book, before {@link
              *  Opportunity#depthLimitFuses()} stops counting - 0.10 for "within
              *  10%". */
-            double depthLimitThreshold
+            double depthLimitThreshold,
+            /**
+             * The player's current chance (0.0-0.20) for the Pure Reptile
+             * Attribute to double a fuse's output, for recipes with a
+             * Reptile-family input - a plain {@code double} for the same
+             * reason {@code huntingWisdom} is: {@link Scorer} touches no
+             * Minecraft API so it can run headless against the Python lab
+             * (see {@code check_parity.ps1}), so the live value has to be
+             * read by a caller that CAN touch the game (see {@code
+             * AttributeDetector}) and handed in here, not read from inside
+             * this class.
+             */
+            double pureReptileChance,
+            /**
+             * An alternative floor for {@link #depthLimit}, in coins per
+             * unit rather than a percentage of profit: how far past its own
+             * current top-of-book price a leg's average may drift before
+             * that leg itself is considered the problem. {@link
+             * #depthLimit} takes whichever of the two floors allows more,
+             * since a percentage-of-profit floor alone can be dominated by
+             * whichever leg has the worst relative liquidity, capping a
+             * cheap, deep-liquidity leg's own usable quantity down to match
+             * even though that leg's own price barely moved - see {@link
+             * #depthLimit}'s own doc for the real report this came from.
+             */
+            double depthLimitFlatTolerance
     ) {
         public static Settings defaults() {
             return new Settings(0.00875, BuyMode.INSTA_BUY, SellMode.SELL_OFFER,
                     0.20, 0.5, 1000, 0, 5000, 0.35, 0.20, 3, true, 30.0, 0.7,
-                    Set.of(), Set.of(), Set.of(), false, 0, 0.10);
+                    Set.of(), Set.of(), Set.of(), false, 0, 0.10, 0, 5.0);
         }
 
         /**
@@ -79,7 +143,8 @@ public final class Scorer {
                     minProfitPerFuse, maxCostPerFuse, minMovingWeek, maxBookImpact,
                     maxPremiumOverReference, minBookOrders, requireReference,
                     maxFillMinutes, queueEfficiency, inputBlacklist, outputBlacklist,
-                    rarityFilter, rankByXp, huntingWisdom, depthLimitThreshold);
+                    rarityFilter, rankByXp, huntingWisdom, depthLimitThreshold, pureReptileChance,
+                    depthLimitFlatTolerance);
         }
     }
 
@@ -88,7 +153,19 @@ public final class Scorer {
             String rarity,
             double cost, double profit, double roi,
             double fusesPerHour, double coinsPerHour, double score,
-            String limiter, double limiterVolume, double fillMinutes,
+            /** The shard whose own order-book depth is actually what caps
+             *  {@link #depthLimitFuses} - buying/selling it any further past
+             *  that point is what pushes average profit per fuse below the
+             *  {@code Settings.depthLimitThreshold} floor. Paired with
+             *  {@link #limiterImpact}, this answers "why is batch only
+             *  N?" - see {@link #depthLimit}. */
+            String limiter,
+            /** How far past its own top-of-book price this leg had moved by
+             *  the {@link #depthLimitFuses} boundary, as a fraction (0.083
+             *  for "8.3%") - always positive regardless of whether {@link
+             *  #limiter} names a buy leg (price rose) or the sell leg (price
+             *  fell), since either way it is the magnitude that matters. */
+            double limiterImpact, double fillMinutes,
             double capture, boolean measured,
             double xpPerFuse, double xpPerHour, double salesPerHour,
             /** How many consecutive fuses of this recipe you could do at once
@@ -193,16 +270,14 @@ public final class Scorer {
     /**
      * Largest quantity of one product buyable in a single sweep such that
      * the average price paid stays within {@code cfg.depthLimitThreshold} of
-     * the current top-of-book price - {@link #depthLimit}'s question for a
-     * single raw purchase instead of a full fusion's paired buy and sell,
-     * for a caller like the shopping list that queues raw quantities rather
-     * than fuses.
-     *
-     * <p>Under Buy order there is no sweep curve to exceed at all - a
-     * resting order fills at the one price it was placed at, not a
-     * depth-dependent average - so this always returns {@link
-     * Long#MAX_VALUE} in that mode rather than a number that would only
-     * ever falsely suggest a limit exists.
+     * the current top-of-book price, with no idea whether the fusion it
+     * feeds is even still profitable at that point - unlike {@link
+     * #depthLimit}, which is the real question a batch limit is supposed to
+     * answer. This is the fallback for when no such recipe is actually
+     * known (see {@link #depthLimitForRecipe}), not the first choice - a
+     * shopping list line whose route is known should always prefer that
+     * instead, the same way {@link dev.squidutils.hud.MultiStepScreen}'s own
+     * "Max" preset does.
      */
     public static long buyDepthLimit(Product p, Settings cfg, Brain.Ref ref) {
         if (p == null) return 0;
@@ -228,41 +303,221 @@ public final class Scorer {
         return lo;
     }
 
-    /**
-     * The largest number of consecutive fuses of one recipe whose average
-     * profit per fuse - real order-book depth on every leg, not the first
-     * fuse's top-of-book price scaled up - stays within {@code
-     * cfg.depthLimitThreshold()} of {@code firstFuseProfit}.
-     *
-     * <p>Average profit per fuse is monotonically non-increasing as the
-     * quantity grows - buying deeper into the ask side or selling deeper
-     * into the bid side is never cheaper than the level before it - so an
-     * exponential bracket followed by a binary search finds the exact
-     * boundary in a handful of book sweeps rather than checking every
-     * quantity one at a time.
-     */
-    private static long depthLimit(Product pa, int ua, Product pb, int ub, boolean sameShard,
-                                   Product pr, int oq, Settings cfg,
-                                   Brain.Ref refA, Brain.Ref refB, Brain.Ref refR,
-                                   double firstFuseProfit) {
-        if (firstFuseProfit <= 0) return 1;
-        double floor = firstFuseProfit * (1.0 - cfg.depthLimitThreshold());
+    /** Which side of a fusion actually caps its batch size - see {@link
+     *  #depthLimit}. */
+    public enum Leg { A, B, R }
 
+    /** {@code fuses}: {@link #depthLimit}'s own answer. {@code leg}/{@code
+     *  impact}: which side is responsible and by how much - see {@link
+     *  Opportunity#limiter}/{@link Opportunity#limiterImpact}, which this
+     *  feeds directly. */
+    public record DepthResult(long fuses, Leg leg, double impact) {}
+
+    /**
+     * The largest number of consecutive fuses of one recipe that either of
+     * two floors still allows, whichever is more generous: {@code
+     * cfg.depthLimitThreshold()} of {@code firstFuseProfit} (average profit
+     * per fuse, real order-book depth on every leg, not the first fuse's
+     * top-of-book price scaled up), or {@code cfg.depthLimitFlatTolerance()}
+     * coins per unit on every individual leg's own price. This is the one
+     * formula every "batch" figure in the mod is meant to share - the
+     * shopping list's clamp button, the route screen's Max preset, and this
+     * table column all answer the same question: how far can trading go
+     * before it stops being worth it.
+     *
+     * <p>The percentage-of-profit floor alone has a real failure mode: it
+     * can be dominated by whichever leg has the worst relative liquidity,
+     * which caps every leg's usable quantity down to match - including a
+     * cheap, deep-liquidity leg whose own price barely moved at all. A real
+     * report: 700x of a ~3,085-coin shard flagged over budget at 610x,
+     * despite its own order book sitting flat (a ~2 coin spread) across
+     * thousands of units - a different leg entirely was the true
+     * constraint. The flat floor answers the more direct question a player
+     * actually has about any one leg - "has this shard's own price moved by
+     * a sane amount" - so taking whichever of the two allows more means a
+     * technicality on one leg's relative percentage no longer strangles a
+     * different leg that is plainly fine in absolute terms.
+     *
+     * <p>Both floors are monotonic in quantity - buying deeper into the ask
+     * side or selling deeper into the bid side is never cheaper than the
+     * level before it - so an exponential bracket followed by a binary
+     * search finds each exact boundary in a handful of book sweeps rather
+     * than checking every quantity one at a time.
+     *
+     * <p>Once the final boundary is found, {@link #attributeLeg} answers
+     * *why* it landed there: whichever leg's own price has drifted furthest
+     * (in coins) from what it would have cost at the first fuse's own rate,
+     * scaled up honestly, is the one actually eating the margin - regardless
+     * of which of the two floors produced the winning boundary.
+     */
+    public static DepthResult depthLimit(Product pa, int ua, Product pb, int ub, boolean sameShard,
+                                         Product pr, int oq, Settings cfg,
+                                         Brain.Ref refA, Brain.Ref refB, Brain.Ref refR,
+                                         double firstFuseProfit) {
+        long byFlat = findBoundary(n -> flatOk(pa, ua, pb, ub, sameShard, pr, oq, cfg, refA, refB, refR, n));
+        if (firstFuseProfit <= 0) {
+            var attribution = attributeLeg(pa, ua, pb, ub, sameShard, pr, oq, cfg, refA, refB, refR, byFlat);
+            return new DepthResult(Math.max(1, byFlat), attribution.leg(), attribution.impact());
+        }
+        double floor = firstFuseProfit * (1.0 - cfg.depthLimitThreshold());
+        long byProfit = findBoundary(n -> {
+            Double avg = avgProfitAt(pa, ua, pb, ub, sameShard, pr, oq, cfg, refA, refB, refR, n);
+            return avg != null && avg >= floor;
+        });
+
+        long best = Math.max(byProfit, byFlat);
+        var attribution = attributeLeg(pa, ua, pb, ub, sameShard, pr, oq, cfg, refA, refB, refR, best);
+        return new DepthResult(best, attribution.leg(), attribution.impact());
+    }
+
+    /** Shared exponential-bracket-then-binary-search shell for {@link
+     *  #depthLimit}'s two floors - they differ only in what counts as
+     *  "still acceptable" at a given quantity, not in how the boundary
+     *  itself is found. */
+    private static long findBoundary(java.util.function.LongPredicate acceptable) {
         long lo = 1, hi = 1;
         while (true) {
             long next = hi * 2;
-            Double avg = avgProfitAt(pa, ua, pb, ub, sameShard, pr, oq, cfg, refA, refB, refR, next);
-            if (avg == null || avg < floor) { hi = next; break; }
+            if (!acceptable.test(next)) { hi = next; break; }
             lo = next;
             hi = next;
             if (next > 1_000_000) break;   // no realistic order book is this deep
         }
         while (lo < hi) {
             long mid = lo + (hi - lo + 1) / 2;
-            Double avg = avgProfitAt(pa, ua, pb, ub, sameShard, pr, oq, cfg, refA, refB, refR, mid);
-            if (avg != null && avg >= floor) lo = mid; else hi = mid - 1;
+            if (acceptable.test(mid)) lo = mid; else hi = mid - 1;
         }
         return lo;
+    }
+
+    /** Whether every leg's own average price, at {@code n} fuses, still sits
+     *  within {@code cfg.depthLimitFlatTolerance()} coins of that leg's own
+     *  current top-of-book price - {@link #depthLimit}'s flat-coins floor,
+     *  checked leg by leg rather than as one combined profit figure. */
+    private static boolean flatOk(Product pa, int ua, Product pb, int ub, boolean sameShard,
+                                  Product pr, int oq, Settings cfg,
+                                  Brain.Ref refA, Brain.Ref refB, Brain.Ref refR, long n) {
+        double tol = cfg.depthLimitFlatTolerance();
+        if (sameShard) {
+            if (!legWithinFlat(pa, (long) (ua + ub) * n, pa.instaBuy(), tol, cfg, refA, true)) return false;
+        } else {
+            if (!legWithinFlat(pa, (long) ua * n, pa.instaBuy(), tol, cfg, refA, true)) return false;
+            if (!legWithinFlat(pb, (long) ub * n, pb.instaBuy(), tol, cfg, refB, true)) return false;
+        }
+        return legWithinFlat(pr, (long) oq * n, pr.instaSell(), tol, cfg, refR, false);
+    }
+
+    /** One leg's own half of {@link #flatOk} - buying may drift up to {@code
+     *  tolerance} above the top ask; selling may drift down to {@code
+     *  tolerance} below the top bid. A leg with no real top-of-book price at
+     *  all is not this floor's problem to flag - {@link #depthLimit}'s other
+     *  (profit) floor already screens that case out via {@code firstFuseProfit}. */
+    private static boolean legWithinFlat(Product p, long units, double top, double tolerance,
+                                         Settings cfg, Brain.Ref ref, boolean isBuy) {
+        if (top <= 0) return true;
+        double total = isBuy ? totalBuyCost(p, units, cfg, ref) : totalSellRevenue(p, units, cfg, ref);
+        if (total < 0) return false;
+        double avg = total / units;
+        return isBuy ? avg <= top + tolerance : avg >= top - tolerance;
+    }
+
+    /**
+     * {@link #depthLimit}, resolved directly from one recipe's own index
+     * rather than pre-split Product/fuseAmount/output-quantity arguments -
+     * the shape every caller outside {@link #evaluate} actually has on
+     * hand: the route screen's "Max" preset, and the shopping list's own
+     * batch clamp once it knows which recipe a queued shard feeds (see
+     * {@code ShoppingList.viaRecipe}). Having one shared place for this
+     * means both read the real fusion economics the same way {@link
+     * #evaluate} itself does, instead of a shard's own price in isolation.
+     *
+     * @return null if either input's or the output's current price is
+     *         unknown - the same "nothing to say yet" case {@link #evaluate}
+     *         itself skips over, rather than a misleading number.
+     */
+    public static DepthResult depthLimitForRecipe(FusionData data, int recipeIndex,
+                                                  Map<String, Product> products, Brain brain, Settings cfg) {
+        int ai = data.inputA(recipeIndex), bi = data.inputB(recipeIndex), ri = data.result(recipeIndex);
+        var sa = data.shard(ai);
+        var sb = data.shard(bi);
+        var sr = data.shard(ri);
+        boolean sameShard = ai == bi;
+        int ua = sa.fuseAmount(), ub = sb.fuseAmount(), oq = data.qty(recipeIndex);
+
+        Product pa = products.get(sa.tag());
+        Product pb = products.get(sb.tag());
+        Product pr = products.get(sr.tag());
+        if (pa == null || pb == null || pr == null) return null;
+
+        Brain.Ref refA = brain.reference(sa.tag());
+        Brain.Ref refB = brain.reference(sb.tag());
+        Brain.Ref refR = brain.reference(sr.tag());
+
+        double costA = totalBuyCost(pa, sameShard ? ua + ub : ua, cfg, refA);
+        if (costA < 0) return null;
+        double cost = costA;
+        if (!sameShard) {
+            double costB = totalBuyCost(pb, ub, cfg, refB);
+            if (costB < 0) return null;
+            cost += costB;
+        }
+        double revenue = totalSellRevenue(pr, oq, cfg, refR);
+        if (revenue < 0) return null;
+
+        return depthLimit(pa, ua, pb, ub, sameShard, pr, oq, cfg, refA, refB, refR, revenue - cost);
+    }
+
+    private record LegImpact(Leg leg, double impact) {}
+
+    /**
+     * At the batch size {@link #depthLimit} already found, compares each
+     * leg's actual cost/revenue against what it would have been if that
+     * leg's own price never moved past the first fuse's rate - the leg with
+     * the largest gap, as a fraction of that honest baseline, is the one
+     * whose order book actually ran out of room first. The other leg(s)
+     * could support buying/selling further; this one is what stops you.
+     */
+    private static LegImpact attributeLeg(Product pa, int ua, Product pb, int ub, boolean sameShard,
+                                          Product pr, int oq, Settings cfg,
+                                          Brain.Ref refA, Brain.Ref refB, Brain.Ref refR, long n) {
+        double bestImpact = -1;
+        Leg bestLeg = Leg.R;
+
+        if (sameShard) {
+            Double impact = degradeFraction(
+                    totalBuyCost(pa, ua + ub, cfg, refA), totalBuyCost(pa, (long) (ua + ub) * n, cfg, refA), n, true);
+            if (impact != null && impact > bestImpact) { bestImpact = impact; bestLeg = Leg.A; }
+        } else {
+            Double impactA = degradeFraction(
+                    totalBuyCost(pa, ua, cfg, refA), totalBuyCost(pa, (long) ua * n, cfg, refA), n, true);
+            if (impactA != null && impactA > bestImpact) { bestImpact = impactA; bestLeg = Leg.A; }
+
+            Double impactB = degradeFraction(
+                    totalBuyCost(pb, ub, cfg, refB), totalBuyCost(pb, (long) ub * n, cfg, refB), n, true);
+            if (impactB != null && impactB > bestImpact) { bestImpact = impactB; bestLeg = Leg.B; }
+        }
+
+        Double impactR = degradeFraction(
+                totalSellRevenue(pr, oq, cfg, refR), totalSellRevenue(pr, (long) oq * n, cfg, refR), n, false);
+        if (impactR != null && impactR > bestImpact) { bestImpact = impactR; bestLeg = Leg.R; }
+
+        return new LegImpact(bestLeg, Math.max(0, bestImpact));
+    }
+
+    /**
+     * How far {@code actualAtN} has drifted from {@code n * atOne} (the
+     * honest, no-depth-impact baseline), as a positive fraction of that
+     * baseline - for a buy leg {@code actualAtN} costing more than the
+     * baseline is the drift; for the sell leg, fetching less than the
+     * baseline is. Null if either quantity could not be filled at all,
+     * which the caller treats as "this leg is not the one to blame" rather
+     * than crashing the comparison.
+     */
+    private static Double degradeFraction(double atOne, double actualAtN, long n, boolean isBuy) {
+        if (atOne <= 0 || actualAtN < 0) return null;
+        double baseline = atOne * n;
+        double drift = isBuy ? actualAtN - baseline : baseline - actualAtN;
+        return baseline > 0 ? Math.max(0, drift) / baseline : null;
     }
 
     /** Average profit per fuse buying/selling {@code n} fuses' worth at
@@ -336,6 +591,31 @@ public final class Scorer {
             Fill fs = sell(pr, oq, cfg, brain.reference(sr.tag()));
             if (!fs.ok) continue;
             double revenue = fs.total * (1.0 - cfg.tax());
+
+            // Pure Reptile Attribute: fusing with any Reptile-family input
+            // has a player-specific chance to double this fuse's output.
+            // Modeled as a weighted average of the normal and the doubled
+            // sale rather than a flat revenue x(1+chance) scale-up, since
+            // selling twice the output can walk into worse order-book depth
+            // than the normal-size sale did - the same reasoning
+            // totalBuyCost already documents for why a bulk price is never
+            // just a per-unit price scaled up. See AttributeDetector for
+            // where the chance itself comes from (read off the Attribute
+            // Menu, not guessed) and why nothing beyond its confirmed base
+            // formula (2% per level, 1-10) is applied.
+            double pureReptileChance = reptileEligible(sa.tag(), sb.tag()) ? cfg.pureReptileChance() : 0.0;
+            if (pureReptileChance > 0) {
+                Fill fsDouble = sell(pr, oq * 2L, cfg, brain.reference(sr.tag()));
+                if (fsDouble.ok) {
+                    double revenueDouble = fsDouble.total * (1.0 - cfg.tax());
+                    revenue = revenue * (1.0 - pureReptileChance) + revenueDouble * pureReptileChance;
+                }
+                // If the book cannot fill double the sale, the normal-size
+                // revenue above stands unmodified - understating a rare
+                // doubled fuse's revenue is the safe direction, not
+                // pretending the market can always absorb twice as much.
+            }
+
             double profit = revenue - cost;
             if (profit < cfg.minProfitPerFuse()) continue;
 
@@ -366,14 +646,6 @@ public final class Scorer {
             double bottleneck = Math.min(rateA, Math.min(rateB, rateR));
             if (bottleneck <= 0) continue;
 
-            String limiter = bottleneck == rateA ? sa.name()
-                    : bottleneck == rateB ? sb.name() : sr.name();
-            // The limiting shard's own raw flow, in units/hour - rateA/rateB/rateR
-            // already divide that down into fusions/hour, which is not what the
-            // "estimated volume" of the bottleneck shard means on its own.
-            double limiterVolume = bottleneck == rateA ? srcA
-                    : bottleneck == rateB ? srcB : absorb;
-
             // Share of that flow you can actually take. Measured from queue
             // competition when resting an order; the configured assumption only
             // when crossing the spread, where nothing observable reveals how
@@ -399,16 +671,21 @@ public final class Scorer {
 
             double rank = (cfg.rankByXp() ? xpPerHour : coinsPerHour) * hourFactor;
 
-            long depthLimitFuses = depthLimit(pa, ua, pb, ub, sameShard, pr, oq, cfg,
+            DepthResult depth = depthLimit(pa, ua, pb, ub, sameShard, pr, oq, cfg,
                     brain.reference(sa.tag()), brain.reference(sb.tag()), brain.reference(sr.tag()),
                     profit);
+            String limiter = switch (depth.leg()) {
+                case A -> sa.name();
+                case B -> sb.name();
+                case R -> sr.name();
+            };
 
             out.add(new Opportunity(r, label(sameShard, ua, ub, oq, sa, sb, sr),
                     sr.tag(), sr.name(), sr.rarity(),
                     cost, profit, profit / cost,
                     fusesPerHour, coinsPerHour, rank,
-                    limiter, limiterVolume, fillIn + fs.minutes, capture, measured,
-                    xpPerFuse, xpPerHour, salesPerHour, depthLimitFuses, boughtPerHour));
+                    limiter, depth.impact(), fillIn + fs.minutes, capture, measured,
+                    xpPerFuse, xpPerHour, salesPerHour, depth.fuses(), boughtPerHour));
         }
 
         out.sort(Comparator.comparingDouble(Opportunity::score).reversed());
