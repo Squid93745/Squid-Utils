@@ -151,8 +151,8 @@ public class SquidUtils implements ClientModInitializer {
         // Drawn after that too - a title card, not a positioned panel, so
         // it belongs on top of everything else this mod draws.
         HudElementRegistry.addLast(
-                Identifier.fromNamespaceAndPath(MOD_ID, "order-splash"),
-                dev.squidutils.bazaar.OrderSplash::render);
+                Identifier.fromNamespaceAndPath(MOD_ID, "splash"),
+                dev.squidutils.hud.Splash::render);
 
         // The "cheapest fusion" line on a shard's own bazaar tooltip - a
         // completely different mechanism from the panel-hover tooltip above,
@@ -306,6 +306,12 @@ public class SquidUtils implements ClientModInitializer {
                                                             return 1;
                                                         }))
                                                 .then(net.fabricmc.fabric.api.client.command.v2
+                                                        .ClientCommands.literal("scoreboard")
+                                                        .executes(c -> {
+                                                            dumpScoreboard();
+                                                            return 1;
+                                                        }))
+                                                .then(net.fabricmc.fabric.api.client.command.v2
                                                         .ClientCommands.literal("exp")
                                                         .executes(c -> {
                                                             logExp = !logExp;
@@ -338,6 +344,111 @@ public class SquidUtils implements ClientModInitializer {
                     }
                 });
 
+        // /squidtimer <duration> <name...> adds a timer directly, no "add"
+        // literal needed - Brigadier tries the literal children (list,
+        // remove, clear) first and only falls through to the duration
+        // argument once none of them match, so this and those never collide.
+        net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback.EVENT
+                .register((dispatcher, ctx) -> dispatcher.register(
+                        net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal("squidtimer")
+                                .then(net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal("list")
+                                        .executes(c -> {
+                                            listTimers();
+                                            return 1;
+                                        }))
+                                .then(net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal("clear")
+                                        .executes(c -> {
+                                            dev.squidutils.tracker.CustomTimers.clear();
+                                            say("all timers cleared");
+                                            return 1;
+                                        }))
+                                .then(net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal("remove")
+                                        .then(net.fabricmc.fabric.api.client.command.v2.ClientCommands
+                                                .argument("name", com.mojang.brigadier.arguments.StringArgumentType.greedyString())
+                                                .executes(c -> {
+                                                    String name = com.mojang.brigadier.arguments.StringArgumentType
+                                                            .getString(c, "name");
+                                                    if (dev.squidutils.tracker.CustomTimers.removeByName(name)) {
+                                                        say("removed timer \"" + name + "\"");
+                                                    } else {
+                                                        say("no timer named \"" + name + "\"");
+                                                    }
+                                                    return 1;
+                                                })))
+                                .then(net.fabricmc.fabric.api.client.command.v2.ClientCommands
+                                        .argument("duration", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                        .then(net.fabricmc.fabric.api.client.command.v2.ClientCommands
+                                                .argument("name", com.mojang.brigadier.arguments.StringArgumentType.greedyString())
+                                                .executes(c -> {
+                                                    String durationText = com.mojang.brigadier.arguments.StringArgumentType
+                                                            .getString(c, "duration");
+                                                    String name = com.mojang.brigadier.arguments.StringArgumentType
+                                                            .getString(c, "name");
+                                                    Long millis = dev.squidutils.tracker.CustomTimers.parseDuration(durationText);
+                                                    if (millis == null || millis <= 0) {
+                                                        say("could not read \"" + durationText
+                                                                + "\" as a duration - try something like 5m, 1h30m, or 90s");
+                                                        return 0;
+                                                    }
+                                                    dev.squidutils.tracker.CustomTimers.add(name, millis);
+                                                    say("timer \"" + name + "\" set for "
+                                                            + dev.squidutils.tracker.CustomTimers.formatDuration(millis));
+                                                    return 1;
+                                                })))
+                                // /squidtimer loop <duration> <loop_time> <loop_quantity> <name...> -
+                                // a "loop" literal rather than reusing the plain duration branch above,
+                                // since a greedy name argument and further positional arguments can't
+                                // both hang off the same node without Brigadier having to guess which
+                                // one a given token belongs to.
+                                .then(net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal("loop")
+                                        .then(net.fabricmc.fabric.api.client.command.v2.ClientCommands
+                                                .argument("duration", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                                .then(net.fabricmc.fabric.api.client.command.v2.ClientCommands
+                                                        .argument("loopTime", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                                        .then(net.fabricmc.fabric.api.client.command.v2.ClientCommands
+                                                                .argument("loopQuantity", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                                                .then(net.fabricmc.fabric.api.client.command.v2.ClientCommands
+                                                                        .argument("name", com.mojang.brigadier.arguments.StringArgumentType.greedyString())
+                                                                        .executes(c -> {
+                                                                            String durationText = com.mojang.brigadier.arguments.StringArgumentType
+                                                                                    .getString(c, "duration");
+                                                                            String loopTimeText = com.mojang.brigadier.arguments.StringArgumentType
+                                                                                    .getString(c, "loopTime");
+                                                                            String loopQuantityText = com.mojang.brigadier.arguments.StringArgumentType
+                                                                                    .getString(c, "loopQuantity");
+                                                                            String name = com.mojang.brigadier.arguments.StringArgumentType
+                                                                                    .getString(c, "name");
+                                                                            Long millis = dev.squidutils.tracker.CustomTimers.parseDuration(durationText);
+                                                                            if (millis == null || millis <= 0) {
+                                                                                say("could not read \"" + durationText
+                                                                                        + "\" as a duration - try something like 5m, 1h30m, or 90s");
+                                                                                return 0;
+                                                                            }
+                                                                            Long loopMillis = dev.squidutils.tracker.CustomTimers.parseDuration(loopTimeText);
+                                                                            if (loopMillis == null || loopMillis <= 0) {
+                                                                                say("could not read \"" + loopTimeText
+                                                                                        + "\" as a loop time - try something like 5m, 1h30m, or 90s");
+                                                                                return 0;
+                                                                            }
+                                                                            Integer loopQuantity = dev.squidutils.tracker.CustomTimers.parseLoopQuantity(loopQuantityText);
+                                                                            if (loopQuantity == null) {
+                                                                                say("could not read \"" + loopQuantityText
+                                                                                        + "\" as a loop quantity - a whole number, or inf");
+                                                                                return 0;
+                                                                            }
+                                                                            dev.squidutils.tracker.CustomTimers.add(name, millis, loopMillis, loopQuantity);
+                                                                            say("timer \"" + name + "\" set for "
+                                                                                    + dev.squidutils.tracker.CustomTimers.formatDuration(millis)
+                                                                                    + ", looping every "
+                                                                                    + dev.squidutils.tracker.CustomTimers.formatDuration(loopMillis)
+                                                                                    + (loopQuantity < 0 ? " forever" : " (" + loopQuantity + " times)"));
+                                                                            return 1;
+                                                                        }))))))
+                                .executes(c -> {
+                                    listTimers();
+                                    return 1;
+                                })));
+
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             while (openKey.consumeClick()) {
                 config.openConfigGui();
@@ -347,6 +458,8 @@ public class SquidUtils implements ClientModInitializer {
             TRACKER.tick();
             dev.squidutils.fishing.FrozenBlazeOverlay.tick(client);
             dev.squidutils.bazaar.OrderTracker.tick(client);
+            dev.squidutils.tracker.MiriaContest.tick();
+            dev.squidutils.tracker.CustomTimers.tick();
         });
 
         // The configurable "open route hotkey": not a registered KeyMapping,
@@ -644,6 +757,25 @@ public class SquidUtils implements ClientModInitializer {
         }
     }
 
+    /** /squidtimer and /squidtimer list share this. */
+    private static void listTimers() {
+        var timers = dev.squidutils.tracker.CustomTimers.timers();
+        if (timers.isEmpty()) {
+            say("no timers set - /squidtimer <duration> <name>, e.g. /squidtimer 30m Kuudra key"
+                    + " (or /squidtimer loop <duration> <loop_time> <loop_quantity> <name> to repeat)");
+            return;
+        }
+        long now = System.currentTimeMillis();
+        for (var t : timers) {
+            String line = t.name + " - " + dev.squidutils.tracker.CustomTimers.formatDuration(t.endAtMillis - now) + " left";
+            if (t.loopMillis > 0) {
+                line += " (loops every " + dev.squidutils.tracker.CustomTimers.formatDuration(t.loopMillis)
+                        + (t.loopQuantity < 0 ? "" : ", " + (t.loopQuantity - t.firedCount) + " left") + ")";
+            }
+            say(line);
+        }
+    }
+
     /**
      * One-shot diagnostic for /squid debug tablist: dumps every tab list
      * entry's display text to the log.
@@ -668,6 +800,33 @@ public class SquidUtils implements ClientModInitializer {
             LOG.info("[squidutils] tab: {}", text);
         }
         say("dumped " + entries.size() + " tab list entries to the log");
+    }
+
+    /**
+     * One-shot diagnostic for /squid debug scoreboard: dumps every
+     * intermediate value {@link dev.squidutils.tracker.Scoreboards#debugLines}
+     * exposes per entry, to the log.
+     *
+     * <p>Prompted by repeated real reports of Miria's Contest tier text (and
+     * its calibration) not being picked up despite the real scoreboard
+     * plainly showing it. A first dump (just the final resolved text) found
+     * every line coming back empty; a fix assuming Hypixel wraps each entry
+     * in a {@code PlayerTeam}'s own prefix/suffix did not resolve it on a
+     * confirmed-clean retest, meaning that guess was wrong too. This dumps
+     * every value the resolution chain depends on - the raw owner string,
+     * whether {@code display()} itself was null, the resolved team (if any)
+     * and its own prefix/suffix, and the final text - so whatever is
+     * actually happening is visible directly instead of guessed at a third
+     * time. Triggered on demand rather than logged passively, so it can be
+     * fired at exactly the moment something looks wrong on screen.
+     */
+    private static void dumpScoreboard() {
+        var lines = dev.squidutils.tracker.Scoreboards.debugLines();
+        LOG.info("[squidutils] scoreboard debug: {} lines", lines.size());
+        for (int i = 0; i < lines.size(); i++) {
+            LOG.info("[squidutils] scoreboard[{}]: {}", i, lines.get(i));
+        }
+        say("dumped " + lines.size() + " scoreboard lines to the log");
     }
 
     private static Set<String> lower(Set<String> in) {

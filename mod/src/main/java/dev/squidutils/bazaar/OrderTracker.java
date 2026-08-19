@@ -379,7 +379,7 @@ public final class OrderTracker {
             play(mc, cfg.bazaar.orderTracker.sound.id, cfg.bazaar.orderTracker.sound.pitch);
         }
         if (cfg.bazaar.orderTracker.splash.enabled) {
-            OrderSplash.show("Order for " + o.itemName + " is outdated",
+            dev.squidutils.hud.Splash.show("Order for " + o.itemName + " is outdated",
                     cfg.bazaar.orderTracker.splash.scale, cfg.bazaar.orderTracker.splash.seconds);
         }
     }

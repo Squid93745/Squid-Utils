@@ -1,4 +1,4 @@
-package dev.squidutils.bazaar;
+package dev.squidutils.hud;
 
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
@@ -10,24 +10,27 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * The big, centered, rainbow "order is outdated" text - a title card, not a
- * HUD panel, so unlike every other overlay this mod draws it is not
- * positioned by the drag editor: it always appears center-upper-screen,
+ * The big, centered, rainbow title-card text used for a moment's notice -
+ * "order is outdated", "Miria's Contest started", a custom timer firing, and
+ * so on. Not a HUD panel, so unlike every other overlay this mod draws it is
+ * not positioned by the drag editor: it always appears center-upper-screen,
  * fades in place for a fixed duration, and is gone.
  *
- * <p>A list of entries, not one - cancelling and relisting several orders at
- * once used to mean each new alert simply overwrote whatever the previous
- * one had just set, so only the last of a burst was ever actually seen. Each
- * {@link #show} call gets its own row instead, stacked below whichever
- * entries are still on screen, and each fades and expires independently on
- * its own timer.
+ * <p>A list of entries, not one - cancelling and relisting several bazaar
+ * orders at once (the feature this was originally built for) used to mean
+ * each new alert simply overwrote whatever the previous one had just set, so
+ * only the last of a burst was ever actually seen. Each {@link #show} call
+ * gets its own row instead, stacked below whichever entries are still on
+ * screen, and each fades and expires independently on its own timer - which
+ * matters just as much now that several different trackers can all fire one
+ * at once.
  *
- * <p>Registered directly as a {@code HudElement} method reference, same as
- * {@code FrozenBlazeOverlay::render}.
+ * <p>Registered directly as a {@code HudElement} method reference in {@code
+ * SquidUtils}.
  */
-public final class OrderSplash {
+public final class Splash {
 
-    private OrderSplash() {}
+    private Splash() {}
 
     private record Entry(String text, float scale, long showUntilMillis, long fadeStartMillis) {}
 
@@ -38,7 +41,7 @@ public final class OrderSplash {
 
     private static final List<Entry> entries = new ArrayList<>();
 
-    /** Wired to {@link OrderTracker}'s alert. */
+    /** Wired to every tracker's own alert. */
     public static void show(String message, float scale, int seconds) {
         long now = System.currentTimeMillis();
         long showUntil = now + seconds * 1000L;

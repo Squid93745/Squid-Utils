@@ -48,6 +48,8 @@ public class GeneralCategory {
     @Expose public WidgetPos shoppingListPos = new WidgetPos(250, 420, 1.0f);
     @Expose public WidgetPos fuseOrderPos = new WidgetPos(430, 420, 1.0f);
     @Expose public WidgetPos orderValuePos = new WidgetPos(8, 500, 1.0f);
+    @Expose public WidgetPos miriaContestPos = new WidgetPos(250, 500, 1.0f);
+    @Expose public WidgetPos customTimersPos = new WidgetPos(430, 500, 1.0f);
     @Expose public WidgetPos[] tablePos = defaultTables();
     @Expose public WidgetPos[][] graphPos = defaultGraphs();
 

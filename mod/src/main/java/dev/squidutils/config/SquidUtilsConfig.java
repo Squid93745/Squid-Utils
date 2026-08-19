@@ -65,6 +65,14 @@ public class SquidUtilsConfig extends Config {
             case FrozenBlazeCategory.LIST_SOUNDS -> dev.squidutils.fishing.FrozenBlazeOverlay.listSounds();
             case BazaarCategory.TEST_SOUND -> dev.squidutils.bazaar.OrderTracker.testSound();
             case BazaarCategory.LIST_SOUNDS -> dev.squidutils.bazaar.OrderTracker.listSounds();
+            case MiriaContestCategory.TEST_SOUND -> dev.squidutils.hud.Sounds.play(
+                    tracker.miriaContest.sound.id, tracker.miriaContest.sound.pitch);
+            case MiriaContestCategory.LIST_SOUNDS -> dev.squidutils.hud.Sounds.list();
+            case CustomTimersCategory.TEST_SOUND -> dev.squidutils.hud.Sounds.play(
+                    tracker.customTimers.sound.id, tracker.customTimers.sound.pitch);
+            case CustomTimersCategory.LIST_SOUNDS -> dev.squidutils.hud.Sounds.list();
+            case CustomTimersCategory.OPEN_SCREEN -> net.minecraft.client.Minecraft.getInstance()
+                    .setScreen(new dev.squidutils.hud.TimerScreen());
             default -> super.executeRunnable(runnableId);
         }
     }
@@ -76,6 +84,11 @@ public class SquidUtilsConfig extends Config {
                 || runnableId == FrozenBlazeCategory.LIST_SOUNDS
                 || runnableId == BazaarCategory.TEST_SOUND
                 || runnableId == BazaarCategory.LIST_SOUNDS
+                || runnableId == MiriaContestCategory.TEST_SOUND
+                || runnableId == MiriaContestCategory.LIST_SOUNDS
+                || runnableId == CustomTimersCategory.TEST_SOUND
+                || runnableId == CustomTimersCategory.LIST_SOUNDS
+                || runnableId == CustomTimersCategory.OPEN_SCREEN
                 || super.isValidRunnable(runnableId);
     }
 
@@ -98,4 +111,8 @@ public class SquidUtilsConfig extends Config {
     @Expose
     @Category(name = "Bazaar", desc = "Warn when a placed order is no longer the best price")
     public BazaarCategory bazaar = new BazaarCategory();
+
+    @Expose
+    @Category(name = "Tracker", desc = "Live HUD trackers for in-game events, and your own custom timers")
+    public TrackerCategory tracker = new TrackerCategory();
 }

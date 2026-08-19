@@ -14,6 +14,11 @@ import dev.squidutils.fusion.engine.RouteSolver;
 import dev.squidutils.fusion.engine.Scorer;
 import dev.squidutils.hud.Draw;
 import dev.squidutils.hud.ShoppingList;
+import dev.squidutils.tracker.CustomTimer;
+import dev.squidutils.tracker.CustomTimers;
+import dev.squidutils.tracker.MiriaContest;
+import dev.squidutils.tracker.SkyBlockTime;
+import io.github.notenoughupdates.moulconfig.ChromaColour;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.network.chat.Component;
@@ -57,7 +62,11 @@ public final class FusionWidgets {
          *  movable-panel machinery (drag/resize editor, {@code WidgetPos}
          *  persistence) every other panel already has, rather than a second
          *  copy of it. */
-        ORDER_VALUE(-1, -1);
+        ORDER_VALUE(-1, -1),
+        /** Nor these two - {@code cfg.tracker.enabled}-gated general event
+         *  trackers, same reasoning as {@link #ORDER_VALUE} above. */
+        MIRIA_CONTEST(-1, -1),
+        CUSTOM_TIMERS(-1, -1);
 
         public final int table;
         public final int graph;
@@ -72,6 +81,8 @@ public final class FusionWidgets {
         public boolean isShoppingList() { return this == SHOPPING_LIST; }
         public boolean isFuseOrder() { return this == FUSE_ORDER; }
         public boolean isOrderValue() { return this == ORDER_VALUE; }
+        public boolean isMiriaContest() { return this == MIRIA_CONTEST; }
+        public boolean isCustomTimers() { return this == CUSTOM_TIMERS; }
     }
 
     private static final int ICON = 9;
@@ -246,6 +257,8 @@ public final class FusionWidgets {
         if (which.isShoppingList()) return cfg.general.shoppingListPos;
         if (which.isFuseOrder()) return cfg.general.fuseOrderPos;
         if (which.isOrderValue()) return cfg.general.orderValuePos;
+        if (which.isMiriaContest()) return cfg.general.miriaContestPos;
+        if (which.isCustomTimers()) return cfg.general.customTimersPos;
         return which.isGraph()
                 ? cfg.general.graphPos[which.table][which.graph]
                 : cfg.general.tablePos[which.table];
@@ -258,6 +271,8 @@ public final class FusionWidgets {
         if (which.isShoppingList()) return "Shopping list";
         if (which.isFuseOrder()) return "Fuse order";
         if (which.isOrderValue()) return "Order value";
+        if (which.isMiriaContest()) return "Miria's Contest";
+        if (which.isCustomTimers()) return "Custom timers";
         return which.isGraph()
                 ? tableName(cfg, which.table) + " · " + METRIC_NAME[which.graph]
                 : tableName(cfg, which.table);
@@ -270,17 +285,20 @@ public final class FusionWidgets {
      * build let you right-click a panel away inside the editor, and once the
      * editor stopped drawing hidden panels there was no way to bring one back.
      *
-     * <p>{@link Which#ORDER_VALUE} is checked first and returns on its own -
-     * it answers to {@code cfg.bazaar.enabled}, not {@code cfg.fusion.enabled},
-     * since it is a bazaar feature that happens to share this movable-panel
-     * machinery rather than an actual fusion one. Every other case still sits
-     * behind {@code cfg.fusion.enabled} the way the whole {@code Which} loop
-     * used to at its call site - moved in here instead of staying a blanket
-     * check in {@code FusionHud.drawAll} specifically so it does not also
-     * swallow the one panel that owes it no allegiance.
+     * <p>{@link Which#ORDER_VALUE}, {@link Which#MIRIA_CONTEST} and {@link
+     * Which#CUSTOM_TIMERS} are checked first and return on their own - none
+     * of the three answers to {@code cfg.fusion.enabled}, since none is
+     * actually a fusion feature, just a panel that shares this movable-panel
+     * machinery rather than growing a second copy of it. Every other case
+     * still sits behind {@code cfg.fusion.enabled} the way the whole {@code
+     * Which} loop used to at its call site - moved in here instead of
+     * staying a blanket check in {@code FusionHud.drawAll} specifically so
+     * it does not also swallow the panels that owe it no allegiance.
      */
     public static boolean enabled(SquidUtilsConfig cfg, Which which) {
         if (which.isOrderValue()) return cfg.bazaar.enabled && cfg.bazaar.orderValue.enabled;
+        if (which.isMiriaContest()) return cfg.tracker.enabled && cfg.tracker.miriaContest.enabled;
+        if (which.isCustomTimers()) return cfg.tracker.enabled && cfg.tracker.customTimers.enabled;
         if (!cfg.fusion.enabled) return false;
         if (which.isTracker()) return cfg.fusion.tracker.trackerShow;
         // Gated purely by the toggle, same as every other panel - not by
@@ -309,6 +327,10 @@ public final class FusionWidgets {
         if (which.isShoppingList()) return !ShoppingList.isEmpty();
         if (which.isFuseOrder()) return ShoppingList.hasSteps();
         if (which.isOrderValue()) return !OrderOverlay.myOrders().isEmpty();
+        if (which.isCustomTimers()) return !dev.squidutils.tracker.CustomTimers.timers().isEmpty();
+        // Miria's Contest is never actually empty - its own countdown is
+        // always calculable (see SkyBlockTime), so it always has something
+        // worth showing even with the scoreboard's tier lines out of view.
         return true;
     }
 
@@ -334,6 +356,8 @@ public final class FusionWidgets {
         if (which.isShoppingList()) return shoppingList(g, font, engine, pos(cfg, which));
         if (which.isFuseOrder()) return fuseOrder(g, font, engine, pos(cfg, which));
         if (which.isOrderValue()) return orderValue(g, font, engine, pos(cfg, which), mouseX, mouseY);
+        if (which.isMiriaContest()) return miriaContest(g, font, cfg, pos(cfg, which));
+        if (which.isCustomTimers()) return customTimers(g, font, cfg, pos(cfg, which));
         return which.isGraph()
                 ? graph(g, font, cfg, engine, which, preview)
                 : table(g, font, cfg, engine, which, preview);
@@ -690,6 +714,135 @@ public final class FusionWidgets {
             lines.add(Component.literal("Live price unavailable right now"));
         }
         return lines;
+    }
+
+    private static final int MIRIA_BAR_MIN_W = 80;
+
+    /** Miria's Contest's own countdown - calculated and self-calibrating
+     *  against the scoreboard's own live reading whenever possible (see
+     *  {@link MiriaContest} for why) - plus current tier and score and the
+     *  next tier's own threshold (or, past the top tier, how far over it),
+     *  whenever the scoreboard's own lines happen to be visible. Tier names
+     *  are coloured with {@link Draw#rarity}, the same rarity scheme every
+     *  other rarity-bearing name in the mod already uses, rather than a
+     *  second scheme invented just for this.
+     *
+     * <p>The countdown renders as a filled bar rather than bare text - the
+     * same number ("1m37s left"), just readable at a glance instead of a
+     * sentence, and the fill fraction is real (elapsed vs. {@link
+     * SkyBlockTime#DAY_MILLIS}, the same one SkyBlock day one contest always
+     * runs), not a decorative animation. Its fill colour reuses the panel's
+     * own configurable accent rather than a colour invented just for the
+     * bar, so changing one setting reshades both consistently.
+     *
+     * <p>The current tier's name comes off the scoreboard shouting in caps
+     * ("UNCOMMON") while the next tier's own line is already title-cased
+     * ("Rare requires...") - a real mismatch that used to sit two lines
+     * apart on screen. {@link #titleCase} normalises the first to match the
+     * second; display-only, the underlying value stays exactly what Hypixel
+     * sent for comparisons/logging elsewhere. */
+    private static int[] miriaContest(GuiGraphicsExtractor g, Font font, SquidUtilsConfig cfg, WidgetPos p) {
+        var state = MiriaContest.current();
+        var trackerCfg = cfg.tracker.miriaContest;
+        int lineH = font.lineHeight + 1;
+        int barH = lineH + 2;
+        int accent = ChromaColour.forLegacyString(trackerCfg.color).getEffectiveColourRGB();
+
+        String title = "Miria's Contest";
+        long msLeft = state != null ? state.msUntilReset() : 0;
+        String timeText = CustomTimers.formatDuration(msLeft) + " left";
+        double frac = state != null
+                ? 1.0 - Math.max(0.0, Math.min(1.0, (double) msLeft / SkyBlockTime.DAY_MILLIS))
+                : 0.0;
+
+        // No placeholder line when the tier is not known - just the title
+        // and the countdown, nothing claiming to be missing.
+        String tierText = null;
+        int tierColour = 0;
+        if (state != null && state.tier() != null) {
+            tierText = titleCase(state.tier()) + (state.score() != null ? " with " + state.score() : "");
+            tierColour = Draw.rarity(state.tier());
+        }
+        String thresholdText = null;
+        int thresholdColour = 0;
+        if (state != null && state.thresholdLine() != null) {
+            thresholdText = "→ " + state.thresholdLine();
+            thresholdColour = Draw.rarity(state.thresholdTier());
+        }
+
+        int width = Math.max(font.width(title), MIRIA_BAR_MIN_W);
+        width = Math.max(width, font.width(timeText));
+        if (tierText != null) width = Math.max(width, font.width(tierText));
+        if (thresholdText != null) width = Math.max(width, font.width(thresholdText));
+
+        int rows = (tierText != null ? 1 : 0) + (thresholdText != null ? 1 : 0);
+        int height = lineH + 2 + barH + 2 + rows * lineH + 8;
+        begin(g, p);
+        if (trackerCfg.toggleBackground) Draw.panel(g, width + 8, height, accent);
+
+        int y = 4;
+        g.text(font, title, 4, y, Draw.TITLE);
+        y += lineH + 2;
+
+        g.fill(4, y, 4 + width, y + barH - 2, 0x40FFFFFF);
+        int fillW = (int) Math.round(width * frac);
+        if (fillW > 0) g.fill(4, y, 4 + fillW, y + barH - 2, (0xA0 << 24) | (accent & 0x00FFFFFF));
+        g.text(font, timeText, 4 + Math.max(0, (width - font.width(timeText)) / 2), y, 0xFFFFFFFF);
+        y += barH + 2;
+
+        if (tierText != null) {
+            g.text(font, tierText, 4, y, tierColour);
+            y += lineH;
+        }
+        if (thresholdText != null) {
+            g.text(font, thresholdText, 4, y, thresholdColour);
+            y += lineH;
+        }
+        end(g);
+        return new int[]{width + 8, height};
+    }
+
+    /** Every timer the player has set themselves - see {@link CustomTimers}
+     *  for how they are created ({@code /squidtimer}, or {@code
+     *  TimerScreen}) and fired. */
+    private static int[] customTimers(GuiGraphicsExtractor g, Font font, SquidUtilsConfig cfg, WidgetPos p) {
+        List<CustomTimer> timers = CustomTimers.timers();
+        int lineH = font.lineHeight + 1;
+        int border = ChromaColour.forLegacyString(cfg.tracker.customTimers.color).getEffectiveColourRGB();
+        long now = System.currentTimeMillis();
+
+        String title = "Custom timers";
+        List<String> lines = new ArrayList<>(timers.size());
+        for (CustomTimer t : timers) {
+            String line = t.name + "  " + CustomTimers.formatDuration(t.endAtMillis - now);
+            if (t.loopMillis > 0) {
+                line += "  ·  " + (t.loopQuantity < 0 ? "loops" : (t.loopQuantity - t.firedCount) + " left");
+            }
+            lines.add(line);
+        }
+        String empty = "empty - /squidtimer <duration> <name>";
+
+        int width = font.width(title);
+        for (String line : lines) width = Math.max(width, font.width(line));
+        if (timers.isEmpty()) width = Math.max(width, font.width(empty));
+
+        int height = lineH * (1 + Math.max(1, timers.size())) + 8;
+        begin(g, p);
+        Draw.panel(g, width + 8, height, border);
+
+        int y = 4;
+        g.text(font, title, 4, y, Draw.TITLE);
+        y += lineH + 2;
+        if (timers.isEmpty()) {
+            g.text(font, empty, 4, y, Draw.DIM);
+        } else {
+            for (String line : lines) {
+                g.text(font, line, 4, y, 0xFF7FD4FF);
+                y += lineH;
+            }
+        }
+        end(g);
+        return new int[]{width + 8, height};
     }
 
     /**
@@ -1342,6 +1495,23 @@ public final class FusionWidgets {
                 Math.round(w * p.scale),
                 Math.round(font.lineHeight * p.scale),
                 d.rootRecipe()));
+    }
+
+    /** "UNCOMMON" -> "Uncommon", "VERY SPECIAL" -> "Very Special" - see
+     *  {@link #miriaContest}'s own doc for why. */
+    private static String titleCase(String s) {
+        StringBuilder sb = new StringBuilder(s.length());
+        boolean startOfWord = true;
+        for (char c : s.toCharArray()) {
+            if (Character.isWhitespace(c)) {
+                startOfWord = true;
+                sb.append(c);
+            } else {
+                sb.append(startOfWord ? Character.toUpperCase(c) : Character.toLowerCase(c));
+                startOfWord = false;
+            }
+        }
+        return sb.toString();
     }
 
     private static int plain(GuiGraphicsExtractor g, Font font, int x, int y, String s) {
