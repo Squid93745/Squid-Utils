@@ -88,8 +88,8 @@ public final class RouteSolver {
     private static double expectedQty(FusionData data, int r, double pureReptileChance) {
         double qty = data.qty(r);
         if (pureReptileChance <= 0) return qty;
-        int ai = data.inputA(r), bi = data.inputB(r);
-        return Scorer.reptileEligible(data.shard(ai).tag(), data.shard(bi).tag())
+        int ri = data.result(r);
+        return Scorer.reptileEligible(data.shard(ri).tag())
                 ? qty * (1.0 + pureReptileChance) : qty;
     }
 
@@ -264,8 +264,8 @@ public final class RouteSolver {
         double credit = 0;
         for (Step step : steps) {
             int r = step.recipeIndex();
-            int ai = data.inputA(r), bi = data.inputB(r), ri = data.result(r);
-            if (!Scorer.reptileEligible(data.shard(ai).tag(), data.shard(bi).tag())) continue;
+            int ri = data.result(r);
+            if (!Scorer.reptileEligible(data.shard(ri).tag())) continue;
             double bonusUnits = step.crafts() * data.qty(r) * pureReptileChance;
             credit += bonusUnits * costs.cost()[ri];
         }

@@ -740,29 +740,55 @@ public final class FusionWidgets {
      * ("Rare requires...") - a real mismatch that used to sit two lines
      * apart on screen. {@link #titleCase} normalises the first to match the
      * second; display-only, the underlying value stays exactly what Hypixel
-     * sent for comparisons/logging elsewhere. */
+     * sent for comparisons/logging elsewhere.
+     *
+     * <p>{@code trackerCfg.compact} swaps all of the above for the original,
+     * bare look this panel started with - the title, then just the time left
+     * and the tier/score line, no bar and no next-tier line - for anyone who
+     * wants the smallest readout rather than the fuller one. Still titled
+     * even here: a lone number floating on the HUD does not say what it is
+     * counting down, and this is meant to sit alongside Custom Timers and
+     * other panels a player is not staring at constantly. */
     private static int[] miriaContest(GuiGraphicsExtractor g, Font font, SquidUtilsConfig cfg, WidgetPos p) {
         var state = MiriaContest.current();
         var trackerCfg = cfg.tracker.miriaContest;
         int lineH = font.lineHeight + 1;
-        int barH = lineH + 2;
         int accent = ChromaColour.forLegacyString(trackerCfg.color).getEffectiveColourRGB();
 
         String title = "Miria's Contest";
         long msLeft = state != null ? state.msUntilReset() : 0;
         String timeText = CustomTimers.formatDuration(msLeft) + " left";
-        double frac = state != null
-                ? 1.0 - Math.max(0.0, Math.min(1.0, (double) msLeft / SkyBlockTime.DAY_MILLIS))
-                : 0.0;
 
-        // No placeholder line when the tier is not known - just the title
-        // and the countdown, nothing claiming to be missing.
+        // No placeholder line when the tier is not known - just the time
+        // (and title), nothing claiming to be missing.
         String tierText = null;
         int tierColour = 0;
         if (state != null && state.tier() != null) {
             tierText = titleCase(state.tier()) + (state.score() != null ? " with " + state.score() : "");
             tierColour = Draw.rarity(state.tier());
         }
+
+        if (trackerCfg.compact) {
+            int width = font.width(title);
+            width = Math.max(width, font.width(timeText));
+            if (tierText != null) width = Math.max(width, font.width(tierText));
+            int height = lineH * (tierText != null ? 3 : 2) + 8;
+            begin(g, p);
+            if (trackerCfg.toggleBackground) Draw.panel(g, width + 8, height, accent);
+
+            int y = 4;
+            g.text(font, title, 4, y, Draw.TITLE);
+            y += lineH;
+            g.text(font, timeText, 4, y, 0xFFFFFFFF);
+            y += lineH;
+            if (tierText != null) g.text(font, tierText, 4, y, tierColour);
+            end(g);
+            return new int[]{width + 8, height};
+        }
+
+        double frac = state != null
+                ? 1.0 - Math.max(0.0, Math.min(1.0, (double) msLeft / SkyBlockTime.DAY_MILLIS))
+                : 0.0;
         String thresholdText = null;
         int thresholdColour = 0;
         if (state != null && state.thresholdLine() != null) {
@@ -775,6 +801,7 @@ public final class FusionWidgets {
         if (tierText != null) width = Math.max(width, font.width(tierText));
         if (thresholdText != null) width = Math.max(width, font.width(thresholdText));
 
+        int barH = lineH + 2;
         int rows = (tierText != null ? 1 : 0) + (thresholdText != null ? 1 : 0);
         int height = lineH + 2 + barH + 2 + rows * lineH + 8;
         begin(g, p);

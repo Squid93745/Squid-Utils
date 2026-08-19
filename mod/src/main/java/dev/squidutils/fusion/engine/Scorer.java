@@ -54,18 +54,33 @@ public final class Scorer {
             "SHARD_TORTOISE", "SHARD_MEGALITH", "SHARD_QUEEN_SNAKE", "SHARD_TITANOBOA");
 
     /**
-     * Whether a recipe with these two input tags can trigger Pure Reptile's
-     * chance to double its output - public so {@link RouteSolver} can apply
-     * the same eligibility check to every tier of a multi-step route, not
-     * just the single fuse {@link #evaluate} scores directly. Pure Reptile
-     * can proc on <em>any</em> eligible tier along a chain, not only the one
-     * that produces the chain's own final shard - a real report: fusing
-     * toward Basilisk produced noticeably more profit than projected, from
-     * Pure Reptile repeatedly proccing on the Python and King Cobra tiers
-     * that fed it, not just a chance on the final Basilisk fuse itself.
+     * Whether a recipe's own <em>result</em> is a "Reptile Fusion" - the
+     * SkyBlock wiki's own exact phrase for what Pure Reptile actually keys
+     * off ("Grants a +2%-20% chance to double shards from a Reptile
+     * Fusion"), not "any fusion that happens to consume a Reptile-family
+     * input". A first version of this method checked the two input tags
+     * instead - it looked plausible (Pure Reptile's own trigger text talks
+     * about "using" a Reptile shard) and even matched one real report
+     * correctly (Python into King Cobra into Basilisk, where the result is
+     * Reptile at every tier anyway) - but a second report caught it
+     * overreaching: Hideonfloor (Shulker Family) + Shellwise (Reptile and
+     * Turtle Family) fusing into Hideonring (Shulker Family) priced in the
+     * full bonus purely because Shellwise happened to be one of the two
+     * inputs, projecting real, substantial profit for a fusion the player
+     * found barely broke even. The data backs "result family" as the actual
+     * rule, not "either input": King Cobra's own real recipe includes Python
+     * (Reptile) + Quake (Elemental Family) as valid inputs, and that pairing
+     * is exactly the kind of tier the class doc above already cites as a
+     * confirmed Pure Reptile proc - a non-Reptile input alongside a Reptile
+     * one is fine there specifically because the <em>result</em>, King
+     * Cobra, is still Reptile-family. Hideonring is not. Public so {@link
+     * RouteSolver} can apply the same check to every tier of a multi-step
+     * route, not just the single fuse {@link #evaluate} scores directly -
+     * Pure Reptile can still proc on any Reptile-result tier along a chain,
+     * not only the one producing the chain's own final shard.
      */
-    public static boolean reptileEligible(String tagA, String tagB) {
-        return REPTILE_TAGS.contains(tagA) || REPTILE_TAGS.contains(tagB);
+    public static boolean reptileEligible(String resultTag) {
+        return REPTILE_TAGS.contains(resultTag);
     }
 
     public enum BuyMode { INSTA_BUY, BUY_ORDER }
@@ -592,7 +607,8 @@ public final class Scorer {
             if (!fs.ok) continue;
             double revenue = fs.total * (1.0 - cfg.tax());
 
-            // Pure Reptile Attribute: fusing with any Reptile-family input
+            // Pure Reptile Attribute: fusing a Reptile Fusion - one whose
+            // own result is Reptile-family, see reptileEligible's own doc -
             // has a player-specific chance to double this fuse's output.
             // Modeled as a weighted average of the normal and the doubled
             // sale rather than a flat revenue x(1+chance) scale-up, since
@@ -603,7 +619,7 @@ public final class Scorer {
             // where the chance itself comes from (read off the Attribute
             // Menu, not guessed) and why nothing beyond its confirmed base
             // formula (2% per level, 1-10) is applied.
-            double pureReptileChance = reptileEligible(sa.tag(), sb.tag()) ? cfg.pureReptileChance() : 0.0;
+            double pureReptileChance = reptileEligible(sr.tag()) ? cfg.pureReptileChance() : 0.0;
             if (pureReptileChance > 0) {
                 Fill fsDouble = sell(pr, oq * 2L, cfg, brain.reference(sr.tag()));
                 if (fsDouble.ok) {

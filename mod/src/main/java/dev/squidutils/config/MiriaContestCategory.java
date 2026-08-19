@@ -46,6 +46,14 @@ public class MiriaContestCategory {
     public boolean toggleBackground = true;
 
     @Expose
+    @ConfigOption(name = "Compact",
+            desc = "Just the time left and your current tier/score - no title, "
+                    + "no countdown bar, no next-tier line.")
+    @ConfigEditorBoolean
+    @SearchTag("miria contest compact minimal simple small")
+    public boolean compact = false;
+
+    @Expose
     @ConfigOption(name = "Alert on contest start",
             desc = "Splash/chat/sound the moment Miria's Contest begins.")
     @ConfigEditorBoolean

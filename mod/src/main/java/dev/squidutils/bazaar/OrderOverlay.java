@@ -79,6 +79,10 @@ public final class OrderOverlay {
 
     private static final int OUTDATED_COLOUR = 0xA0FF3333;
     private static final int UP_TO_DATE_COLOUR = 0xA033CC33;
+    /** A beaten order Safe Tracking is deliberately not alerting on - see
+     *  {@code OrderTracker#beatenBySingleItem}. Orange rather than red: it
+     *  is still worth a glance, just not a chat/sound/splash interruption. */
+    private static final int SAFE_UNDERCUT_COLOUR = 0xA0FFAA00;
     private static final int SLOT_SIZE = 16;
 
     /** One of the current player's own orders, straight off the screen's
@@ -169,9 +173,17 @@ public final class OrderOverlay {
             boolean outdated = order.sell()
                     ? current > 0 && current < order.unitPrice() - OrderTracker.PRICE_EPSILON
                     : current > 0 && current > order.unitPrice() + OrderTracker.PRICE_EPSILON;
+            // Same Safe Tracking case OrderTracker itself is quietly not
+            // alerting on - shown here as orange rather than red so it is
+            // still visible at a glance without reading as "outdated" the
+            // same way a real undercut does.
+            boolean safeUndercut = outdated && cfg.bazaar.orderTracker.safeTracking
+                    && OrderTracker.beatenBySingleItem(product, order.sell());
             logIfChanged(order, current, outdated, engine);
 
-            if (outdated && showOutdated) {
+            if (outdated && safeUndercut && showOutdated) {
+                fillSlot(g, left, top, slot, SAFE_UNDERCUT_COLOUR);
+            } else if (outdated && showOutdated) {
                 fillSlot(g, left, top, slot, OUTDATED_COLOUR);
             } else if (!outdated && showUpToDate) {
                 fillSlot(g, left, top, slot, UP_TO_DATE_COLOUR);

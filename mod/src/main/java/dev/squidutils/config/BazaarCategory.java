@@ -61,6 +61,15 @@ public class BazaarCategory {
         public boolean enabled = false;
 
         @Expose
+        @ConfigOption(name = "Safe Tracking",
+                desc = "Safe tracking does not alert you if your order is undercut "
+                        + "by one item listing, so you don't relist and hit the 15b "
+                        + "Bazaar cap. If doing small orders, turn this off.")
+        @ConfigEditorBoolean
+        @SearchTag("bazaar order safe tracking undercut one item 15b cap relist")
+        public boolean safeTracking = false;
+
+        @Expose
         @ConfigOption(name = "Chat message", desc = "Announce it in chat.")
         @ConfigEditorBoolean
         @SearchTag("bazaar order chat message announce")

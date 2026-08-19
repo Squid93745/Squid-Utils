@@ -66,6 +66,13 @@ import java.util.regex.Pattern;
  *
  * <p>Session-only, like {@code ShoppingList} - not worth persisting an order
  * that will resolve one way or another within the same sitting.
+ *
+ * <p>Safe Tracking ({@link #beatenBySingleItem}) skips the alert - but keeps
+ * watching - when the only thing currently beating an order's price is a
+ * single-item listing: reacting to one is a coin flip between "a real
+ * competitor" and "someone's leftover 1x test order that clears itself
+ * within a minute", and relisting on every false alarm burns through the
+ * 15b Bazaar order cap for no reason on the second kind.
  */
 public final class OrderTracker {
 
@@ -142,6 +149,21 @@ public final class OrderTracker {
     // list) uses the exact same tolerance, rather than a second copy that
     // could silently drift from it.
     static final double PRICE_EPSILON = 0.05;
+
+    /** Whether the level currently beating this order's price is itself just
+     *  a single item - Safe Tracking's own definition of "not real
+     *  competition yet" (see {@code BazaarCategory.OrderTrackerCategory
+     *  #safeTracking}'s own description): a lone 1-unit listing a fraction
+     *  of a coin better is likely to clear on its own well before a
+     *  relisted order would even finish going through, and reacting to it
+     *  risks nothing but burning through the 15b Bazaar order cap relisting
+     *  against something that was never really competition. Package-visible
+     *  so {@link OrderOverlay} tints the exact same case this class quietly
+     *  tolerates, rather than a second guess at what "safe" means. */
+    static boolean beatenBySingleItem(BazaarClient.Product p, boolean sell) {
+        List<BazaarClient.Level> levels = sell ? p.asks() : p.bids();
+        return !levels.isEmpty() && levels.getFirst().amount() <= 1;
+    }
 
     // The most recent exact unit price read off an open Setup screen, paired
     // with the chat confirmation that follows a moment after the player
@@ -342,6 +364,14 @@ public final class OrderTracker {
             boolean beatenNow = o.sell
                     ? current > 0 && current < o.unitPrice - PRICE_EPSILON
                     : current > 0 && current > o.unitPrice + PRICE_EPSILON;
+            if (beatenNow && cfg.bazaar.orderTracker.safeTracking && beatenBySingleItem(p, o.sell)) {
+                // A single-item undercut does not count under Safe Tracking
+                // - reset any pending "suspect" state too, rather than
+                // letting a since-cleared trivial listing linger toward an
+                // alert once it is already gone.
+                o.suspectSnapshotTime = -1;
+                continue;
+            }
             if (!beatenNow) {
                 o.suspectSnapshotTime = -1;
                 continue;
